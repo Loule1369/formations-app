@@ -57,9 +57,19 @@ create table demande_lignes (
   created_at timestamptz not null default now()
 );
 
+create table scenarios (
+  id uuid primary key default gen_random_uuid(),
+  demande_id uuid not null references demandes(id) on delete cascade,
+  nom text not null default 'Option A',
+  est_retenu boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
 create table creneaux (
   id uuid primary key default gen_random_uuid(),
   demande_id uuid references demandes(id) on delete cascade,
+  demande_ligne_id uuid references demande_lignes(id) on delete cascade,
+  scenario_id uuid references scenarios(id) on delete cascade,
   formateur_id uuid not null references formateurs(id) on delete cascade,
   type text not null check (type in ('formation', 'deplacement')),
   date date not null,
@@ -85,6 +95,7 @@ alter table absences enable row level security;
 alter table formations_catalogue enable row level security;
 alter table demandes enable row level security;
 alter table demande_lignes enable row level security;
+alter table scenarios enable row level security;
 alter table creneaux enable row level security;
 alter table devis_lignes enable row level security;
 
@@ -94,5 +105,6 @@ create policy "allow all - absences" on absences for all using (true) with check
 create policy "allow all - formations_catalogue" on formations_catalogue for all using (true) with check (true);
 create policy "allow all - demandes" on demandes for all using (true) with check (true);
 create policy "allow all - demande_lignes" on demande_lignes for all using (true) with check (true);
+create policy "allow all - scenarios" on scenarios for all using (true) with check (true);
 create policy "allow all - creneaux" on creneaux for all using (true) with check (true);
 create policy "allow all - devis_lignes" on devis_lignes for all using (true) with check (true);
