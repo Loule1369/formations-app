@@ -31,8 +31,18 @@ function dureeHeures(debut, fin) {
   return Math.max(0.5, heureEnDecimal(fin) - heureEnDecimal(debut))
 }
 
+// Toujours raisonner en heure locale : toISOString() (UTC) décale la date d'un jour
+// pour un utilisateur en France dès qu'on manipule un minuit local.
 function formatDate(date) {
-  return date.toISOString().slice(0, 10)
+  const y = date.getFullYear()
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const j = String(date.getDate()).padStart(2, '0')
+  return `${y}-${m}-${j}`
+}
+
+// Parse une date stockée ("YYYY-MM-DD") en minuit LOCAL, jamais en UTC.
+function parseDate(dateStr) {
+  return new Date(dateStr + 'T00:00:00')
 }
 
 function formatJourLabel(date) {
@@ -72,7 +82,7 @@ export default function Planning() {
   const baseDate = useMemo(() => {
     if (creneaux.length === 0) return new Date(new Date().toDateString())
     const min = creneaux.reduce((m, c) => (c.date < m ? c.date : m), creneaux[0].date)
-    return new Date(new Date(min).getTime() - JOUR_MS)
+    return new Date(parseDate(min).getTime() - JOUR_MS)
   }, [creneaux])
 
   const jours = useMemo(
@@ -88,7 +98,7 @@ export default function Planning() {
     }
     const positions = {}
     for (const [date, blocs] of Object.entries(parJour)) {
-      const jourIndex = Math.round((new Date(date).getTime() - baseDate.getTime()) / JOUR_MS)
+      const jourIndex = Math.round((parseDate(date).getTime() - baseDate.getTime()) / JOUR_MS)
       if (jourIndex < 0 || jourIndex >= DAYS_SHOWN) continue
       const tri = [...blocs].sort((a, b) => heureEnDecimal(a.heure_debut) - heureEnDecimal(b.heure_debut))
       const finLanes = []
@@ -207,8 +217,20 @@ export default function Planning() {
   }
 
   // Un même formateur reste sur place tant que l'écart entre deux jours de mission ne dépasse pas
-  // quelques jours (ex. un mardi creux au milieu d'une semaine) : pas d'aller-retour pour si peu.
-  const ECART_MAX_MEME_MISSION = 3
+  // un jour creux isolé (ex. un mardi sans formation au milieu d'une semaine). En revanche, dès
+  // qu'un week-end s'intercale, il rentre chez lui : retour le vendredi soir, aller le lundi matin.
+  const ECART_MAX_MEME_MISSION = 2
+
+  function intervalleContientWeekend(dateDebut, dateFin) {
+    let d = parseDate(dateDebut)
+    const fin = parseDate(dateFin)
+    d.setTime(d.getTime() + JOUR_MS)
+    while (d < fin) {
+      if (d.getDay() === 0 || d.getDay() === 6) return true
+      d.setTime(d.getTime() + JOUR_MS)
+    }
+    return false
+  }
 
   function grouperVoyages(blocsTries) {
     const groupes = []
@@ -217,8 +239,9 @@ export default function Planning() {
       if (!courant) {
         courant = { debut: bloc.date, fin: bloc.date }
       } else {
-        const ecart = Math.round((new Date(bloc.date) - new Date(courant.fin)) / JOUR_MS)
-        if (ecart <= ECART_MAX_MEME_MISSION) {
+        const ecart = Math.round((parseDate(bloc.date).getTime() - parseDate(courant.fin).getTime()) / JOUR_MS)
+        const traverseWeekend = intervalleContientWeekend(courant.fin, bloc.date)
+        if (!traverseWeekend && ecart <= ECART_MAX_MEME_MISSION) {
           courant.fin = bloc.date
         } else {
           groupes.push(courant)
@@ -252,7 +275,7 @@ export default function Planning() {
     for (const [formateurId, blocs] of Object.entries(parFormateur)) {
       const tri = [...blocs].sort((a, b) => a.date.localeCompare(b.date))
       for (const voyage of grouperVoyages(tri)) {
-        const debutEstLundi = new Date(voyage.debut + 'T00:00:00').getDay() === 1
+        const debutEstLundi = parseDate(voyage.debut).getDay() === 1
         // Le lundi, le trajet se fait le matin même (pas de déplacement le dimanche par défaut).
         const arrivee = debutEstLundi
           ? {
@@ -261,7 +284,7 @@ export default function Planning() {
               heure_fin: decimalEnHeure(WINDOW_START + DUREE_DEPLACEMENT),
             }
           : {
-              date: formatDate(new Date(new Date(voyage.debut).getTime() - JOUR_MS)),
+              date: formatDate(new Date(parseDate(voyage.debut).getTime() - JOUR_MS)),
               heure_debut: decimalEnHeure(WINDOW_END - DUREE_DEPLACEMENT),
               heure_fin: decimalEnHeure(WINDOW_END),
             }
@@ -559,7 +582,7 @@ export default function Planning() {
         alertes.push(`${nom} : ${total.toFixed(1)}h le ${date} (> 10h)`)
       }
       const finMax = Math.max(...blocs.map((c) => heureEnDecimal(c.heure_fin)))
-      const cleLendemain = `${formateurId}|${formatDate(new Date(new Date(date).getTime() + JOUR_MS))}`
+      const cleLendemain = `${formateurId}|${formatDate(new Date(parseDate(date).getTime() + JOUR_MS))}`
       const blocsLendemain = parFormateurEtJour[cleLendemain]
       if (blocsLendemain) {
         const debutMin = Math.min(...blocsLendemain.map((c) => heureEnDecimal(c.heure_debut)))
