@@ -313,3 +313,25 @@
   background: #f4f4f4;
   color: #555;
 }
+
+.liste-lignes-demande {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 0.75rem;
+  font-size: 0.85rem;
+}
+
+.liste-lignes-demande li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0;
+}
+
+.badge-groupe {
+  font-size: 0.7rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 10px;
+  background: #eaf1fb;
+  color: #2e5c8a;
+}

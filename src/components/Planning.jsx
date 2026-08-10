@@ -145,8 +145,9 @@ export default function Planning() {
     const [lignesRes, scenariosRes] = await Promise.all([
       supabase
         .from('demande_lignes')
-        .select('id, nb_participants, formations_catalogue(nom, duree_h, code)')
-        .eq('demande_id', id),
+        .select('id, formation_id, nb_participants, groupe, formations_catalogue(nom, duree_h, code)')
+        .eq('demande_id', id)
+        .order('created_at'),
       supabase.from('scenarios').select('id, nom, est_retenu').eq('demande_id', id).order('created_at'),
     ])
     setLignes(lignesRes.data || [])
@@ -192,6 +193,7 @@ export default function Planning() {
 
   const MAX_DUREE_JOUR = 7
   const HEURE_DEBUT_LUNDI = 13.5 // le lundi matin est réservé au trajet par défaut
+  const MAX_DUREE_DEMARRAGE_APRES_MIDI = 3 // un 1er jour qui démarre l'après-midi (ex. lundi) reste court, le reste bascule le lendemain matin
   const PAUSE_DEJEUNER_DEBUT = 12
   const PAUSE_DEJEUNER_FIN = 13.5
 
@@ -220,12 +222,14 @@ export default function Planning() {
           jourCourant === null
             ? jourOuvreDepuis(new Date(new Date().toDateString()))
             : jourOuvreSuivant(jourCourant)
-        const heureDebutJour = jourCourant.getDay() === 1 ? HEURE_DEBUT_LUNDI : 9
+        const demarreApresMidi = jourCourant.getDay() === 1
+        const heureDebutJour = demarreApresMidi ? HEURE_DEBUT_LUNDI : 9
         const traversePause = heureDebutJour < PAUSE_DEJEUNER_DEBUT
         const budgetJour = traversePause
           ? WINDOW_END - heureDebutJour - (PAUSE_DEJEUNER_FIN - PAUSE_DEJEUNER_DEBUT)
           : WINDOW_END - heureDebutJour
-        const dureeJour = Math.min(dureeRestante, MAX_DUREE_JOUR, budgetJour)
+        const plafondJour = demarreApresMidi ? MAX_DUREE_DEMARRAGE_APRES_MIDI : MAX_DUREE_JOUR
+        const dureeJour = Math.min(dureeRestante, plafondJour, budgetJour)
         for (const segment of decouperAvecPauseDejeuner(heureDebutJour, dureeJour)) {
           blocs.push({
             demande_id: demandeIdCible,
@@ -273,7 +277,7 @@ export default function Planning() {
           ? {
               date: voyage.debut,
               heure_debut: decimalEnHeure(WINDOW_START),
-              heure_fin: decimalEnHeure(WINDOW_START + DUREE_DEPLACEMENT),
+              heure_fin: decimalEnHeure(PAUSE_DEJEUNER_DEBUT),
             }
           : {
               date: formatDate(new Date(parseDate(voyage.debut).getTime() - JOUR_MS)),
@@ -312,7 +316,7 @@ export default function Planning() {
   async function rafraichirDeplacements(scenarioIdCible) {
     const { data } = await supabase
       .from('creneaux')
-      .select('id, type, date, heure_debut, heure_fin, formateur_id, demande_ligne_id, demande_lignes(formations_catalogue(nom))')
+      .select('id, type, date, heure_debut, heure_fin, formateur_id, demande_ligne_id, demande_lignes(groupe, formations_catalogue(nom))')
       .eq('scenario_id', scenarioIdCible)
       .eq('type', 'deplacement')
     setCreneaux((prev) => [...prev.filter((c) => c.type !== 'deplacement'), ...(data || [])])
@@ -330,7 +334,7 @@ export default function Planning() {
     setBlocEnConfirmation('')
     const { data } = await supabase
       .from('creneaux')
-      .select('id, type, date, heure_debut, heure_fin, formateur_id, demande_ligne_id, demande_lignes(formations_catalogue(nom))')
+      .select('id, type, date, heure_debut, heure_fin, formateur_id, demande_ligne_id, demande_lignes(groupe, formations_catalogue(nom))')
       .eq('scenario_id', id)
       .order('date')
     setCreneaux(data || [])
@@ -430,6 +434,41 @@ export default function Planning() {
     }
     setMessage('')
     await finaliserMutation()
+  }
+
+  // Duplique une formation en un groupe supplémentaire (ex. 2 sessions pour 2 groupes de participants).
+  // Chaque groupe est une ligne de demande indépendante, planifiable séparément.
+  async function dupliquerGroupe(ligne) {
+    setMessage('')
+    setSucces('')
+    const soeurs = lignes.filter((l) => l.formation_id === ligne.formation_id)
+    const nouveauGroupe = Math.max(...soeurs.map((l) => l.groupe || 1)) + 1
+
+    const sansGroupe = soeurs.filter((l) => !l.groupe)
+    if (sansGroupe.length > 0) {
+      await supabase.from('demande_lignes').update({ groupe: 1 }).in('id', sansGroupe.map((l) => l.id))
+    }
+
+    const { data, error } = await supabase
+      .from('demande_lignes')
+      .insert({
+        demande_id: demandeId,
+        formation_id: ligne.formation_id,
+        nb_participants: ligne.nb_participants,
+        groupe: nouveauGroupe,
+      })
+      .select('id, formation_id, nb_participants, groupe, formations_catalogue(nom, duree_h, code)')
+      .single()
+    if (error) {
+      setMessage(error.message)
+      return
+    }
+
+    setLignes((prev) => [
+      ...prev.map((l) => (sansGroupe.some((s) => s.id === l.id) ? { ...l, groupe: 1 } : l)),
+      data,
+    ])
+    setSucces(`Groupe ${nouveauGroupe} créé pour « ${ligne.formations_catalogue?.nom} ». Ajoutez-le au planning via le formulaire ci-dessous.`)
   }
 
   async function supprimerBloc(id) {
@@ -652,12 +691,25 @@ export default function Planning() {
             </button>
           </div>
 
+          <ul className="liste-lignes-demande">
+            {lignes.map((l) => (
+              <li key={l.id}>
+                {l.formations_catalogue?.nom}
+                {l.groupe ? <span className="badge-groupe">Groupe {l.groupe}</span> : null}
+                <button type="button" onClick={() => dupliquerGroupe(l)}>
+                  + Dupliquer (nouveau groupe)
+                </button>
+              </li>
+            ))}
+          </ul>
+
           <div className="barre-ajout">
             <select value={ligneId} onChange={(e) => setLigneId(e.target.value)}>
               <option value="">— Formation —</option>
               {lignes.map((l) => (
                 <option key={l.id} value={l.id}>
                   {l.formations_catalogue?.nom}
+                  {l.groupe ? ` (Groupe ${l.groupe})` : ''}
                 </option>
               ))}
             </select>
@@ -771,7 +823,10 @@ export default function Planning() {
                     )}
                     {estFormation ? (
                       <>
-                        <div className="planning-bloc-titre">{c.demande_lignes?.formations_catalogue?.nom}</div>
+                        <div className="planning-bloc-titre">
+                          {c.demande_lignes?.formations_catalogue?.nom}
+                          {c.demande_lignes?.groupe ? ` (Groupe ${c.demande_lignes.groupe})` : ''}
+                        </div>
                         <div className="planning-bloc-heures">
                           {c.heure_debut.slice(0, 5)}–
                           {(redimensionnementEnCours?.id === c.id

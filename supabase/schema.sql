@@ -54,6 +54,7 @@ create table demande_lignes (
   demande_id uuid not null references demandes(id) on delete cascade,
   formation_id uuid not null references formations_catalogue(id),
   nb_participants int,
+  groupe integer,
   created_at timestamptz not null default now()
 );
 
