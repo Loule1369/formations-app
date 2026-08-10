@@ -2,8 +2,9 @@ import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabaseClient'
 import { grouperVoyages } from '../lib/dates'
 
-const TARIF_NUIT_HOTEL = 120
-const TARIF_REPAS = 25
+// Prix de vente HT (source : "2026_Outil de chiffrage des offres de formation.xlsx", feuille "Autres tarifs").
+const TARIF_NUIT_HOTEL = 135
+const TARIF_REPAS = 30
 
 export default function Chiffrage() {
   const [demandes, setDemandes] = useState([])
