@@ -107,8 +107,6 @@ export default function Planning() {
     [baseDate],
   )
 
-  const LARGEUR_DEPLACEMENT = 16
-
   const disposition = useMemo(() => {
     const parJour = {}
     for (const c of creneaux) {
@@ -134,15 +132,16 @@ export default function Planning() {
         }
       }
 
-      // Les déplacements occupent une fine bande à droite de la colonne, indépendante des formations.
+      // Les déplacements prennent toute la largeur du jour par défaut, et ne se partagent
+      // la colonne (entre eux, jamais avec les formations) que s'ils sont plusieurs à se chevaucher.
       const deplacements = blocs.filter((b) => b.type === 'deplacement')
       const { laneDeBloc: laneDepl, nbLanes: nbLanesDepl } = assignerLanes(deplacements)
-      const largeurDepl = LARGEUR_DEPLACEMENT / nbLanesDepl
+      const largeurDepl = DAY_WIDTH / nbLanesDepl
       for (const bloc of deplacements) {
         positions[bloc.id] = {
-          x: xJour + DAY_WIDTH - LARGEUR_DEPLACEMENT + laneDepl[bloc.id] * largeurDepl,
+          x: xJour + laneDepl[bloc.id] * largeurDepl,
           y: HEADER_HEIGHT + (heureEnDecimal(bloc.heure_debut) - WINDOW_START) * HOUR_HEIGHT,
-          width: largeurDepl - 1,
+          width: largeurDepl - 3,
           height: dureeHeures(bloc.heure_debut, bloc.heure_fin) * HOUR_HEIGHT - 3,
         }
       }
@@ -223,6 +222,21 @@ export default function Planning() {
 
   const MAX_DUREE_JOUR = 7
   const HEURE_DEBUT_LUNDI = 13.5 // le lundi matin est réservé au trajet par défaut
+  const PAUSE_DEJEUNER_DEBUT = 12
+  const PAUSE_DEJEUNER_FIN = 13.5
+
+  // Découpe un créneau qui chevaucherait la pause déjeuner en deux blocs (matin / après-midi).
+  function decouperAvecPauseDejeuner(heureDebutJour, dureeJour) {
+    if (heureDebutJour >= PAUSE_DEJEUNER_DEBUT || heureDebutJour + dureeJour <= PAUSE_DEJEUNER_DEBUT) {
+      return [{ heure_debut: heureDebutJour, heure_fin: heureDebutJour + dureeJour }]
+    }
+    const dureeMatin = PAUSE_DEJEUNER_DEBUT - heureDebutJour
+    const dureeApresMidi = dureeJour - dureeMatin
+    return [
+      { heure_debut: heureDebutJour, heure_fin: PAUSE_DEJEUNER_DEBUT },
+      { heure_debut: PAUSE_DEJEUNER_FIN, heure_fin: PAUSE_DEJEUNER_FIN + dureeApresMidi },
+    ]
+  }
 
   async function genererPlanningParDefaut(demandeIdCible, scenarioIdCible, lignesData) {
     if (!lignesData || lignesData.length === 0 || formateurs.length === 0) return
@@ -237,17 +251,23 @@ export default function Planning() {
             ? jourOuvreDepuis(new Date(new Date().toDateString()))
             : jourOuvreSuivant(jourCourant)
         const heureDebutJour = jourCourant.getDay() === 1 ? HEURE_DEBUT_LUNDI : 9
-        const dureeJour = Math.min(dureeRestante, MAX_DUREE_JOUR, WINDOW_END - heureDebutJour)
-        blocs.push({
-          demande_id: demandeIdCible,
-          demande_ligne_id: ligne.id,
-          scenario_id: scenarioIdCible,
-          formateur_id: formateur.id,
-          type: 'formation',
-          date: formatDate(jourCourant),
-          heure_debut: decimalEnHeure(heureDebutJour),
-          heure_fin: decimalEnHeure(heureDebutJour + dureeJour),
-        })
+        const traversePause = heureDebutJour < PAUSE_DEJEUNER_DEBUT
+        const budgetJour = traversePause
+          ? WINDOW_END - heureDebutJour - (PAUSE_DEJEUNER_FIN - PAUSE_DEJEUNER_DEBUT)
+          : WINDOW_END - heureDebutJour
+        const dureeJour = Math.min(dureeRestante, MAX_DUREE_JOUR, budgetJour)
+        for (const segment of decouperAvecPauseDejeuner(heureDebutJour, dureeJour)) {
+          blocs.push({
+            demande_id: demandeIdCible,
+            demande_ligne_id: ligne.id,
+            scenario_id: scenarioIdCible,
+            formateur_id: formateur.id,
+            type: 'formation',
+            date: formatDate(jourCourant),
+            heure_debut: decimalEnHeure(segment.heure_debut),
+            heure_fin: decimalEnHeure(segment.heure_fin),
+          })
+        }
         dureeRestante -= dureeJour
       }
     }
@@ -584,24 +604,32 @@ export default function Planning() {
     await finaliserMutation()
   }
 
+  // Une même formation peut être découpée en plusieurs blocs (matin/après-midi, plusieurs jours) :
+  // changer le formateur sur l'un d'eux le change sur tous les blocs de cette même formation.
   async function changerFormateurBloc(creneau, nouveauFormateurId) {
-    setMessage('')
-    setCreneaux((prev) => prev.map((c) => (c.id === creneau.id ? { ...c, formateur_id: nouveauFormateurId } : c)))
+    const freres = creneau.demande_ligne_id
+      ? creneaux.filter((c) => c.demande_ligne_id === creneau.demande_ligne_id)
+      : [creneau]
 
-    const conflit = await conflitAvecPlanningsRetenus(
-      nouveauFormateurId,
-      creneau.date,
-      creneau.heure_debut,
-      creneau.heure_fin,
-      creneau.id,
-    )
-    if (conflit) {
-      setMessage(conflit)
-      setCreneaux((prev) => prev.map((c) => (c.id === creneau.id ? creneau : c)))
-      return
+    for (const f of freres) {
+      const conflit = await conflitAvecPlanningsRetenus(
+        nouveauFormateurId,
+        f.date,
+        f.heure_debut,
+        f.heure_fin,
+        f.id,
+      )
+      if (conflit) {
+        setMessage(conflit)
+        return
+      }
     }
 
-    await supabase.from('creneaux').update({ formateur_id: nouveauFormateurId }).eq('id', creneau.id)
+    setMessage('')
+    const idsFreres = new Set(freres.map((f) => f.id))
+    setCreneaux((prev) => prev.map((c) => (idsFreres.has(c.id) ? { ...c, formateur_id: nouveauFormateurId } : c)))
+
+    await supabase.from('creneaux').update({ formateur_id: nouveauFormateurId }).in('id', [...idsFreres])
     await finaliserMutation()
   }
 
@@ -797,7 +825,7 @@ export default function Planning() {
                       redimensionnerBloc(c, ref.offsetHeight)
                     }}
                     className={`planning-bloc ${c.type}`}
-                    style={{ background: couleur }}
+                    style={estFormation ? { background: couleur } : { borderColor: couleur }}
                   >
                     {estFormation && (
                       <button
@@ -829,10 +857,12 @@ export default function Planning() {
                         </select>
                       </>
                     ) : (
-                      <div
-                        className="planning-bloc-deplacement-zone"
-                        title={`Déplacement (auto) ${c.heure_debut.slice(0, 5)}–${c.heure_fin.slice(0, 5)}`}
-                      />
+                      <>
+                        <div className="planning-bloc-titre">Déplacement</div>
+                        <div className="planning-bloc-heures">
+                          {c.heure_debut.slice(0, 5)}–{c.heure_fin.slice(0, 5)}
+                        </div>
+                      </>
                     )}
                   </Rnd>
                 )

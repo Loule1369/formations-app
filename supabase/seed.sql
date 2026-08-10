@@ -11,9 +11,11 @@ insert into formations_catalogue (code, nom, duree_h, prerequis, prix) values
   ('WCS-SUPERV', 'WCS - supervision des équipements', 7, null, 1300);
 
 insert into formateurs (nom, statut, base_depart, competences) values
-  ('Test Formateur Interne 1', 'interne', 'Lyon', array['CONV-OP', 'CONV-MGR', 'STOCK-AUTO']),
-  ('Test Formateur Interne 2', 'interne', 'Lille', array['WMS-BASE', 'WMS-ADMIN', 'WCS-SUPERV']),
-  ('Test Formateur FORDOC', 'fordoc', 'Paris', array['FORMEUSE', 'FERMEUSE']);
+  ('Jean FORDOC1', 'fordoc', 'Paris', array['FORMEUSE', 'FERMEUSE']),
+  ('Corinne FORDOC2', 'fordoc', 'Lyon', array['CONV-OP', 'CONV-MGR']),
+  ('Isabelle SAV', 'interne', 'Lille', array['STOCK-AUTO', 'WCS-SUPERV']),
+  ('Maxime DIH', 'interne', 'Nantes', array['WMS-BASE', 'WMS-ADMIN']),
+  ('Eglantine INSTALL', 'interne', 'Toulouse', array['CONV-OP', 'STOCK-AUTO']);
 
 insert into clients (nom, secteur) values
   ('Entrepôt Fictif Nord SARL', 'Logistique e-commerce'),
