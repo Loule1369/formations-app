@@ -175,39 +175,38 @@ export default function Planning() {
     return formateurs.find((f) => (f.competences || []).includes(code)) || formateurs[0]
   }
 
+  const MAX_DUREE_JOUR = 7
+
   async function genererPlanningParDefaut(demandeIdCible, scenarioIdCible, lignesData) {
     if (!lignesData || lignesData.length === 0 || formateurs.length === 0) return
     let jourCourant = new Date(new Date().toDateString())
     const blocs = []
     for (const ligne of lignesData) {
-      jourCourant = jourOuvreSuivant(jourCourant)
-      const duree = ligne.formations_catalogue?.duree_h || 4
       const formateur = trouverFormateurPourCode(ligne.formations_catalogue?.code)
-      blocs.push({
-        demande_id: demandeIdCible,
-        demande_ligne_id: ligne.id,
-        scenario_id: scenarioIdCible,
-        formateur_id: formateur.id,
-        type: 'formation',
-        date: formatDate(jourCourant),
-        heure_debut: '09:00:00',
-        heure_fin: decimalEnHeure(Math.min(9 + duree, WINDOW_END)),
-      })
+      let dureeRestante = ligne.formations_catalogue?.duree_h || 4
+      while (dureeRestante > 0) {
+        jourCourant = jourOuvreSuivant(jourCourant)
+        const dureeJour = Math.min(dureeRestante, MAX_DUREE_JOUR)
+        blocs.push({
+          demande_id: demandeIdCible,
+          demande_ligne_id: ligne.id,
+          scenario_id: scenarioIdCible,
+          formateur_id: formateur.id,
+          type: 'formation',
+          date: formatDate(jourCourant),
+          heure_debut: '09:00:00',
+          heure_fin: decimalEnHeure(9 + dureeJour),
+        })
+        dureeRestante -= dureeJour
+      }
     }
     await supabase.from('creneaux').insert(blocs)
     await synchroniserDeplacements(scenarioIdCible, demandeIdCible)
   }
 
-  function estUniquementWeekend(dateDebut, dateFin) {
-    const d = new Date(dateDebut)
-    const fin = new Date(dateFin)
-    d.setTime(d.getTime() + JOUR_MS)
-    while (d < fin) {
-      if (d.getDay() !== 0 && d.getDay() !== 6) return false
-      d.setTime(d.getTime() + JOUR_MS)
-    }
-    return true
-  }
+  // Un même formateur reste sur place tant que l'écart entre deux jours de mission ne dépasse pas
+  // quelques jours (ex. un mardi creux au milieu d'une semaine) : pas d'aller-retour pour si peu.
+  const ECART_MAX_MEME_MISSION = 3
 
   function grouperVoyages(blocsTries) {
     const groupes = []
@@ -217,7 +216,7 @@ export default function Planning() {
         courant = { debut: bloc.date, fin: bloc.date }
       } else {
         const ecart = Math.round((new Date(bloc.date) - new Date(courant.fin)) / JOUR_MS)
-        if (ecart <= 1 || estUniquementWeekend(courant.fin, bloc.date)) {
+        if (ecart <= ECART_MAX_MEME_MISSION) {
           courant.fin = bloc.date
         } else {
           groupes.push(courant)
