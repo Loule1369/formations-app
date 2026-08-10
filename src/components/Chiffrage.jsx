@@ -1,14 +1,20 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabaseClient'
 import { grouperVoyages } from '../lib/dates'
+import { useProjetActif } from '../lib/ProjetActifContext'
 
-// Prix de vente HT (source : "2026_Outil de chiffrage des offres de formation.xlsx", feuille "Autres tarifs").
-const TARIF_NUIT_HOTEL = 135
-const TARIF_REPAS = 30
+// Prix de vente / prix de revient HT (source : "2026_Outil de chiffrage des offres de formation.xlsx", feuille "Autres tarifs").
+const TARIF_NUIT_HOTEL_PV = 135
+const TARIF_NUIT_HOTEL_PR = 120
+const TARIF_REPAS_PV = 30
+const TARIF_REPAS_PR = 25
+
+function ligneVide() {
+  return { demande_id: '', libelle: 'Nouvelle ligne', quantite: 1, prix_unitaire: 0, prix_revient: 0, origine: null }
+}
 
 export default function Chiffrage() {
-  const [demandes, setDemandes] = useState([])
-  const [demandeId, setDemandeId] = useState('')
+  const { demandeId, clientNom } = useProjetActif()
   const [scenarios, setScenarios] = useState([])
   const [scenarioId, setScenarioId] = useState('')
   const [lignes, setLignes] = useState([])
@@ -18,23 +24,18 @@ export default function Chiffrage() {
   const [generation, setGeneration] = useState(false)
 
   useEffect(() => {
-    supabase
-      .from('demandes')
-      .select('id, statut, clients(nom)')
-      .order('created_at', { ascending: false })
-      .then(({ data }) => setDemandes(data || []))
-  }, [])
-
-  async function chargerDemande(id) {
-    setDemandeId(id)
-    setScenarioId('')
-    setMessage('')
-    setSucces('')
-    if (!id) {
+    if (!demandeId) {
       setScenarios([])
       setLignes([])
+      setScenarioId('')
       return
     }
+    chargerDemande(demandeId)
+  }, [demandeId])
+
+  async function chargerDemande(id) {
+    setMessage('')
+    setSucces('')
     const [scenariosRes, lignesRes] = await Promise.all([
       supabase.from('scenarios').select('id, nom, est_retenu').eq('demande_id', id).order('created_at'),
       supabase.from('devis_lignes').select('*').eq('demande_id', id).order('created_at'),
@@ -62,7 +63,7 @@ export default function Chiffrage() {
     try {
       const { data: creneaux } = await supabase
         .from('creneaux')
-        .select('type, date, formateur_id, demande_ligne_id, demande_lignes(formations_catalogue(nom, prix))')
+        .select('type, date, formateur_id, demande_ligne_id, demande_lignes(groupe, formations_catalogue(nom, prix, prix_revient))')
         .eq('scenario_id', scenarioId)
 
       const formations = (creneaux || []).filter((c) => c.type === 'formation')
@@ -72,15 +73,16 @@ export default function Chiffrage() {
       const parLigne = {}
       for (const c of formations) {
         if (!c.demande_ligne_id) continue
-        parLigne[c.demande_ligne_id] = c.demande_lignes?.formations_catalogue
+        parLigne[c.demande_ligne_id] = c.demande_lignes
       }
       const lignesFormations = Object.values(parLigne)
         .filter(Boolean)
-        .map((f) => ({
+        .map((dl) => ({
           demande_id: demandeId,
-          libelle: f.nom,
+          libelle: `${dl.formations_catalogue?.nom || 'Formation'}${dl.groupe ? ` (Groupe ${dl.groupe})` : ''}`,
           quantite: 1,
-          prix_unitaire: f.prix || 0,
+          prix_unitaire: dl.formations_catalogue?.prix || 0,
+          prix_revient: dl.formations_catalogue?.prix_revient || 0,
           origine: 'planning',
         }))
 
@@ -109,14 +111,16 @@ export default function Chiffrage() {
           demande_id: demandeId,
           libelle: "Nuits d'hôtel formateur",
           quantite: totalNuits,
-          prix_unitaire: TARIF_NUIT_HOTEL,
+          prix_unitaire: TARIF_NUIT_HOTEL_PV,
+          prix_revient: TARIF_NUIT_HOTEL_PR,
           origine: 'planning',
         })
         lignesFrais.push({
           demande_id: demandeId,
           libelle: 'Repas soir (déplacement)',
           quantite: totalNuits,
-          prix_unitaire: TARIF_REPAS,
+          prix_unitaire: TARIF_REPAS_PV,
+          prix_revient: TARIF_REPAS_PR,
           origine: 'planning',
         })
       }
@@ -125,7 +129,8 @@ export default function Chiffrage() {
           demande_id: demandeId,
           libelle: 'Repas midi (jours de formation)',
           quantite: joursFormation,
-          prix_unitaire: TARIF_REPAS,
+          prix_unitaire: TARIF_REPAS_PV,
+          prix_revient: TARIF_REPAS_PR,
           origine: 'planning',
         })
       }
@@ -149,7 +154,7 @@ export default function Chiffrage() {
   async function ajouterLigneLibre() {
     const { data, error } = await supabase
       .from('devis_lignes')
-      .insert({ demande_id: demandeId, libelle: 'Nouvelle ligne', quantite: 1, prix_unitaire: 0, origine: null })
+      .insert({ ...ligneVide(), demande_id: demandeId })
       .select('*')
       .single()
     if (error) {
@@ -168,7 +173,12 @@ export default function Chiffrage() {
     if (!ligne) return
     await supabase
       .from('devis_lignes')
-      .update({ libelle: ligne.libelle, quantite: Number(ligne.quantite) || 0, prix_unitaire: Number(ligne.prix_unitaire) || 0 })
+      .update({
+        libelle: ligne.libelle,
+        quantite: Number(ligne.quantite) || 0,
+        prix_unitaire: Number(ligne.prix_unitaire) || 0,
+        prix_revient: Number(ligne.prix_revient) || 0,
+      })
       .eq('id', id)
   }
 
@@ -177,64 +187,72 @@ export default function Chiffrage() {
     setLignes((prev) => prev.filter((l) => l.id !== id))
   }
 
-  const total = lignes.reduce((s, l) => s + Number(l.quantite || 0) * Number(l.prix_unitaire || 0), 0)
+  const totalPV = lignes.reduce((s, l) => s + Number(l.quantite || 0) * Number(l.prix_unitaire || 0), 0)
+  const totalPR = lignes.reduce((s, l) => s + Number(l.quantite || 0) * Number(l.prix_revient || 0), 0)
+  const margeTotale = totalPV - totalPR
+  const tauxMarge = totalPV > 0 ? (margeTotale / totalPV) * 100 : 0
+
+  if (!demandeId) {
+    return (
+      <div className="page page-large">
+        <h1>Chiffrage</h1>
+        <p>Aucun projet actif. Créez ou reprenez une demande depuis « Expression de besoin ».</p>
+      </div>
+    )
+  }
 
   return (
     <div className="page page-large">
-      <h1>Chiffrage</h1>
+      <h1>Chiffrage — {clientNom}</h1>
 
-      <label>
-        Demande à chiffrer
-        <select value={demandeId} onChange={(e) => chargerDemande(e.target.value)}>
-          <option value="">— Choisir une demande —</option>
-          {demandes.map((d) => (
-            <option key={d.id} value={d.id}>
-              {d.clients?.nom} ({d.statut})
-            </option>
-          ))}
-        </select>
-      </label>
+      <div className="barre-scenarios">
+        <label>
+          Scénario de planning à chiffrer
+          <select value={scenarioId} onChange={(e) => setScenarioId(e.target.value)}>
+            <option value="">— Choisir —</option>
+            {scenarios.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.nom} {s.est_retenu ? '★ retenu' : ''}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button type="button" onClick={genererDepuisPlanning} disabled={generation}>
+          {generation ? 'Génération…' : 'Générer / réinitialiser depuis ce planning'}
+        </button>
+      </div>
+      <p className="astuce">
+        Ce bouton (re)calcule uniquement les lignes automatiques (formations, nuits, repas) à partir
+        du planning — pratique pour repartir d'un chiffrage théorique propre. Les lignes que vous
+        ajoutez à la main (ex. licences Ascentline) ne sont jamais touchées.
+      </p>
 
-      {demandeId && (
-        <>
-          <div className="barre-scenarios">
-            <label>
-              Scénario de planning à chiffrer
-              <select value={scenarioId} onChange={(e) => setScenarioId(e.target.value)}>
-                <option value="">— Choisir —</option>
-                {scenarios.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.nom} {s.est_retenu ? '★ retenu' : ''}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button type="button" onClick={genererDepuisPlanning} disabled={generation}>
-              {generation ? 'Génération…' : 'Générer / réinitialiser depuis ce planning'}
-            </button>
-          </div>
-          <p className="astuce">
-            Ce bouton (re)calcule uniquement les lignes automatiques (formations, nuits, repas) à partir
-            du planning — pratique pour repartir d'un chiffrage théorique propre. Les lignes que vous
-            ajoutez à la main (ex. licences Ascentline) ne sont jamais touchées.
-          </p>
+      {message && <p className="message erreur">{message}</p>}
+      {succes && <p className="message succes">{succes}</p>}
 
-          {message && <p className="message erreur">{message}</p>}
-          {succes && <p className="message succes">{succes}</p>}
-
-          <table className="table-devis">
-            <thead>
-              <tr>
-                <th>Libellé</th>
-                <th>Origine</th>
-                <th>Quantité</th>
-                <th>Prix unitaire HT</th>
-                <th>Total HT</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {lignes.map((l) => (
+      <div className="table-devis-scroll">
+        <table className="table-devis">
+          <thead>
+            <tr>
+              <th>Libellé</th>
+              <th>Origine</th>
+              <th>Qté</th>
+              <th>PV unitaire HT</th>
+              <th>PR unitaire HT</th>
+              <th>Total PV HT</th>
+              <th>Total PR HT</th>
+              <th>Marge</th>
+              <th>Taux marge</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {lignes.map((l) => {
+              const totalLignePV = Number(l.quantite || 0) * Number(l.prix_unitaire || 0)
+              const totalLignePR = Number(l.quantite || 0) * Number(l.prix_revient || 0)
+              const margeLigne = totalLignePV - totalLignePR
+              const tauxLigne = totalLignePV > 0 ? (margeLigne / totalLignePV) * 100 : 0
+              return (
                 <tr key={l.id}>
                   <td>
                     <input
@@ -268,20 +286,37 @@ export default function Chiffrage() {
                       onBlur={() => sauvegarderLigne(l.id)}
                     />
                   </td>
-                  <td>{(Number(l.quantite || 0) * Number(l.prix_unitaire || 0)).toFixed(2)} €</td>
+                  <td>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={l.prix_revient}
+                      onChange={(e) => modifierLigneLocal(l.id, 'prix_revient', e.target.value)}
+                      onBlur={() => sauvegarderLigne(l.id)}
+                    />
+                  </td>
+                  <td>{totalLignePV.toFixed(2)} €</td>
+                  <td>{totalLignePR.toFixed(2)} €</td>
+                  <td>{margeLigne.toFixed(2)} €</td>
+                  <td>{totalLignePV > 0 ? `${tauxLigne.toFixed(0)}%` : '—'}</td>
                   <td>
                     <button type="button" onClick={() => supprimerLigne(l.id)}>×</button>
                   </td>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
 
-          <button type="button" onClick={ajouterLigneLibre}>+ Ajouter une ligne libre</button>
+      <button type="button" onClick={ajouterLigneLibre}>+ Ajouter une ligne libre</button>
 
-          <h2>Total HT : {total.toFixed(2)} €</h2>
-        </>
-      )}
+      <div className="recap-devis">
+        <p>Total prix de vente HT : <strong>{totalPV.toFixed(2)} €</strong></p>
+        <p>Total prix de revient HT : <strong>{totalPR.toFixed(2)} €</strong></p>
+        <p>Marge : <strong>{margeTotale.toFixed(2)} €</strong> ({tauxMarge.toFixed(0)}%)</p>
+      </div>
     </div>
   )
 }

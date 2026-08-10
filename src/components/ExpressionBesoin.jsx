@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabaseClient'
+import { useProjetActif } from '../lib/ProjetActifContext'
 
 const STATUT_LABELS = {
   besoin_exprime: 'Besoin exprimé',
@@ -14,6 +15,7 @@ function ligneVide() {
 }
 
 export default function ExpressionBesoin() {
+  const { definirProjetActif } = useProjetActif()
   const [clients, setClients] = useState([])
   const [formations, setFormations] = useState([])
   const [demandesRecentes, setDemandesRecentes] = useState([])
@@ -92,6 +94,7 @@ export default function ExpressionBesoin() {
     setEnvoi(true)
     try {
       let finalClientId = clientId
+      let finalClientNom = clients.find((c) => c.id === clientId)?.nom || ''
       if (!finalClientId) {
         const { data, error } = await supabase
           .from('clients')
@@ -100,6 +103,7 @@ export default function ExpressionBesoin() {
           .single()
         if (error) throw error
         finalClientId = data.id
+        finalClientNom = nouveauClientNom.trim()
       }
 
       const { data: demande, error: demandeError } = await supabase
@@ -118,7 +122,8 @@ export default function ExpressionBesoin() {
       )
       if (lignesError) throw lignesError
 
-      setSucces('Demande enregistrée.')
+      definirProjetActif(demande.id, finalClientNom)
+      setSucces(`Demande enregistrée et définie comme projet actif pour "${finalClientNom}".`)
       setClientId('')
       setNouveauClientNom('')
       setNotes('')
@@ -230,8 +235,14 @@ export default function ExpressionBesoin() {
           <ul className="liste-demandes">
             {demandesRecentes.map((d) => (
               <li key={d.id}>
-                <strong>{d.clients?.nom}</strong> — {STATUT_LABELS[d.statut] || d.statut} —{' '}
-                {d.date_creation}
+                <button
+                  type="button"
+                  className="lien-reprendre"
+                  onClick={() => definirProjetActif(d.id, d.clients?.nom)}
+                >
+                  <strong>{d.clients?.nom}</strong> — {STATUT_LABELS[d.statut] || d.statut} — {d.date_creation}
+                  <span className="astuce-reprendre"> (cliquer pour en faire le projet actif)</span>
+                </button>
               </li>
             ))}
           </ul>

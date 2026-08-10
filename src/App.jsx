@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { supabase } from './lib/supabaseClient'
+import { ProjetActifProvider } from './lib/ProjetActifContext'
 import Login from './components/Login'
+import SelecteurProjet from './components/SelecteurProjet'
 import ExpressionBesoin from './components/ExpressionBesoin'
 import Planning from './components/Planning'
 import Chiffrage from './components/Chiffrage'
@@ -30,7 +32,7 @@ function App() {
   const PageActive = PAGES[page]
 
   return (
-    <>
+    <ProjetActifProvider>
       <nav className="nav-principale">
         <button onClick={() => setPage('besoin')} disabled={page === 'besoin'}>
           Expression de besoin
@@ -41,12 +43,13 @@ function App() {
         <button onClick={() => setPage('chiffrage')} disabled={page === 'chiffrage'}>
           Chiffrage
         </button>
+        <SelecteurProjet />
         <span className="nav-spacer" />
         <span className="nav-utilisateur">{session.user.email}</span>
         <button onClick={() => supabase.auth.signOut()}>Déconnexion</button>
       </nav>
       <PageActive />
-    </>
+    </ProjetActifProvider>
   )
 }
 

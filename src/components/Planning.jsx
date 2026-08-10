@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Rnd } from 'react-rnd'
 import { supabase } from '../lib/supabaseClient'
 import { JOUR_MS, heureEnDecimal, decimalEnHeure, dureeHeures, formatDate, parseDate, grouperVoyages } from '../lib/dates'
+import { useProjetActif } from '../lib/ProjetActifContext'
 
 const HOUR_HEIGHT = 36
 const WINDOW_START = 7
@@ -37,8 +38,7 @@ function formatJourLabel(date) {
 }
 
 export default function Planning() {
-  const [demandes, setDemandes] = useState([])
-  const [demandeId, setDemandeId] = useState('')
+  const { demandeId, clientNom } = useProjetActif()
   const [lignes, setLignes] = useState([])
   const [formateurs, setFormateurs] = useState([])
 
@@ -120,19 +120,19 @@ export default function Planning() {
   }, [creneaux, baseDate])
 
   useEffect(() => {
-    async function chargerBase() {
-      const [demandesRes, formateursRes] = await Promise.all([
-        supabase.from('demandes').select('id, statut, clients(nom)').order('created_at', { ascending: false }),
-        supabase.from('formateurs').select('id, nom, statut, base_depart').order('nom'),
-      ])
-      if (demandesRes.data) setDemandes(demandesRes.data)
-      if (formateursRes.data) setFormateurs(formateursRes.data)
-    }
-    chargerBase()
+    supabase
+      .from('formateurs')
+      .select('id, nom, statut, base_depart')
+      .order('nom')
+      .then(({ data }) => data && setFormateurs(data))
   }, [])
 
+  useEffect(() => {
+    if (demandeId && formateurs.length === 0) return // attend le chargement des formateurs
+    chargerDemande(demandeId)
+  }, [demandeId, formateurs.length])
+
   async function chargerDemande(id) {
-    setDemandeId(id)
     setScenarioId('')
     setCreneaux([])
     setMessage('')
@@ -210,27 +210,46 @@ export default function Planning() {
     ]
   }
 
+  // Génère le planning par défaut en optimisant le remplissage : une nouvelle formation continue sur
+  // le créneau restant du jour en cours (si la place le permet) au lieu de systématiquement sauter au
+  // jour suivant — ça évite les petits "bouts" de formation isolés sur une journée dédiée pour presque rien.
   async function genererPlanningParDefaut(demandeIdCible, scenarioIdCible, lignesData) {
     if (!lignesData || lignesData.length === 0 || formateurs.length === 0) return
     let jourCourant = null
+    let heureCourante = null
+    let heureFinJourCourant = null
     const blocs = []
+
+    function capaciteRestanteJour() {
+      const pauseAVenir = heureCourante < PAUSE_DEJEUNER_DEBUT
+      const budget = pauseAVenir
+        ? heureFinJourCourant - heureCourante - (PAUSE_DEJEUNER_FIN - PAUSE_DEJEUNER_DEBUT)
+        : heureFinJourCourant - heureCourante
+      return Math.max(0, budget)
+    }
+
+    function demarrerNouveauJour() {
+      jourCourant =
+        jourCourant === null
+          ? jourOuvreDepuis(new Date(new Date().toDateString()))
+          : jourOuvreSuivant(jourCourant)
+      const demarreApresMidi = jourCourant.getDay() === 1
+      heureCourante = demarreApresMidi ? HEURE_DEBUT_LUNDI : 9
+      heureFinJourCourant = demarreApresMidi
+        ? HEURE_DEBUT_LUNDI + MAX_DUREE_DEMARRAGE_APRES_MIDI
+        : 9 + MAX_DUREE_JOUR + (PAUSE_DEJEUNER_FIN - PAUSE_DEJEUNER_DEBUT)
+    }
+
     for (const ligne of lignesData) {
       const formateur = trouverFormateurPourCode(ligne.formations_catalogue?.code)
       let dureeRestante = ligne.formations_catalogue?.duree_h || 4
       while (dureeRestante > 0) {
-        jourCourant =
-          jourCourant === null
-            ? jourOuvreDepuis(new Date(new Date().toDateString()))
-            : jourOuvreSuivant(jourCourant)
-        const demarreApresMidi = jourCourant.getDay() === 1
-        const heureDebutJour = demarreApresMidi ? HEURE_DEBUT_LUNDI : 9
-        const traversePause = heureDebutJour < PAUSE_DEJEUNER_DEBUT
-        const budgetJour = traversePause
-          ? WINDOW_END - heureDebutJour - (PAUSE_DEJEUNER_FIN - PAUSE_DEJEUNER_DEBUT)
-          : WINDOW_END - heureDebutJour
-        const plafondJour = demarreApresMidi ? MAX_DUREE_DEMARRAGE_APRES_MIDI : MAX_DUREE_JOUR
-        const dureeJour = Math.min(dureeRestante, plafondJour, budgetJour)
-        for (const segment of decouperAvecPauseDejeuner(heureDebutJour, dureeJour)) {
+        if (jourCourant === null || capaciteRestanteJour() <= 0) {
+          demarrerNouveauJour()
+        }
+        const dureeChunk = Math.min(dureeRestante, capaciteRestanteJour())
+        const segments = decouperAvecPauseDejeuner(heureCourante, dureeChunk)
+        for (const segment of segments) {
           blocs.push({
             demande_id: demandeIdCible,
             demande_ligne_id: ligne.id,
@@ -242,7 +261,11 @@ export default function Planning() {
             heure_fin: decimalEnHeure(segment.heure_fin),
           })
         }
-        dureeRestante -= dureeJour
+        heureCourante = segments[segments.length - 1].heure_fin
+        if (heureCourante >= PAUSE_DEJEUNER_DEBUT && heureCourante < PAUSE_DEJEUNER_FIN) {
+          heureCourante = PAUSE_DEJEUNER_FIN
+        }
+        dureeRestante -= dureeChunk
       }
     }
     await supabase.from('creneaux').insert(blocs)
@@ -640,21 +663,18 @@ export default function Planning() {
       .map((c) => `${c.demande_lignes?.formations_catalogue?.nom || 'Formation'} placée le ${c.date} (week-end).`)
   }, [creneaux])
 
+  if (!demandeId) {
+    return (
+      <div className="page page-large">
+        <h1>Planning</h1>
+        <p>Aucun projet actif. Créez ou reprenez une demande depuis « Expression de besoin ».</p>
+      </div>
+    )
+  }
+
   return (
     <div className="page page-large">
-      <h1>Planning</h1>
-
-      <label>
-        Demande à planifier
-        <select value={demandeId} onChange={(e) => chargerDemande(e.target.value)}>
-          <option value="">— Choisir une demande —</option>
-          {demandes.map((d) => (
-            <option key={d.id} value={d.id}>
-              {d.clients?.nom} ({d.statut})
-            </option>
-          ))}
-        </select>
-      </label>
+      <h1>Planning — {clientNom}</h1>
 
       {demandeId && (
         <>
@@ -823,7 +843,10 @@ export default function Planning() {
                     )}
                     {estFormation ? (
                       <>
-                        <div className="planning-bloc-titre">
+                        <div
+                          className="planning-bloc-titre"
+                          title={`${c.demande_lignes?.formations_catalogue?.nom || ''}${c.demande_lignes?.groupe ? ` (Groupe ${c.demande_lignes.groupe})` : ''}`}
+                        >
                           {c.demande_lignes?.formations_catalogue?.nom}
                           {c.demande_lignes?.groupe ? ` (Groupe ${c.demande_lignes.groupe})` : ''}
                         </div>
