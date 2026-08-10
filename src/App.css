@@ -295,3 +295,21 @@
 .table-devis input[type='number'] {
   width: 6rem;
 }
+
+.badge-origine {
+  display: inline-block;
+  font-size: 0.7rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+
+.badge-origine.auto {
+  background: #eaf1fb;
+  color: #2e5c8a;
+}
+
+.badge-origine.manuel {
+  background: #f4f4f4;
+  color: #555;
+}

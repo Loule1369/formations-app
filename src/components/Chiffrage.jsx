@@ -210,9 +210,14 @@ export default function Chiffrage() {
               </select>
             </label>
             <button type="button" onClick={genererDepuisPlanning} disabled={generation}>
-              {generation ? 'Génération…' : 'Générer / régénérer le devis depuis ce planning'}
+              {generation ? 'Génération…' : 'Générer / réinitialiser depuis ce planning'}
             </button>
           </div>
+          <p className="astuce">
+            Ce bouton (re)calcule uniquement les lignes automatiques (formations, nuits, repas) à partir
+            du planning — pratique pour repartir d'un chiffrage théorique propre. Les lignes que vous
+            ajoutez à la main (ex. licences Ascentline) ne sont jamais touchées.
+          </p>
 
           {message && <p className="message erreur">{message}</p>}
           {succes && <p className="message succes">{succes}</p>}
@@ -221,6 +226,7 @@ export default function Chiffrage() {
             <thead>
               <tr>
                 <th>Libellé</th>
+                <th>Origine</th>
                 <th>Quantité</th>
                 <th>Prix unitaire HT</th>
                 <th>Total HT</th>
@@ -237,6 +243,11 @@ export default function Chiffrage() {
                       onChange={(e) => modifierLigneLocal(l.id, 'libelle', e.target.value)}
                       onBlur={() => sauvegarderLigne(l.id)}
                     />
+                  </td>
+                  <td>
+                    <span className={`badge-origine ${l.origine === 'planning' ? 'auto' : 'manuel'}`}>
+                      {l.origine === 'planning' ? 'Planning' : 'Manuel'}
+                    </span>
                   </td>
                   <td>
                     <input
