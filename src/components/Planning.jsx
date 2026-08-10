@@ -176,11 +176,11 @@ export default function Planning() {
     chargerScenario(scenariosList[0].id)
   }
 
-  // Premier jour ouvré à partir d'une date INCLUSE (utilisé pour le tout premier bloc : si on
-  // planifie un lundi, le plan par défaut peut démarrer ce lundi même, pas le mardi suivant).
-  function jourOuvreDepuis(date) {
+  // Le tout premier jour du plan par défaut est toujours un lundi (arrivée le matin, formation
+  // l'après-midi) : un projet se planifie sur une semaine complète, pas "à partir d'aujourd'hui".
+  function prochainLundi(date) {
     const d = new Date(date)
-    while (d.getDay() === 0 || d.getDay() === 6) {
+    while (d.getDay() !== 1) {
       d.setTime(d.getTime() + JOUR_MS)
     }
     return d
@@ -208,6 +208,7 @@ export default function Planning() {
   const PAUSE_DEJEUNER_DEBUT = 12
   const PAUSE_DEJEUNER_FIN = 13.5
   const DUREE_MIN_MATINEE_PLEINE = 4 // en dessous, une session matinale isolée est recalée pour finir à midi
+  const DUREE_MIN_DEMARRAGE_NOUVELLE_FORMATION = 2 // une nouvelle formation ne démarre pas dans un reliquat trop court (ex. 11h-12h) : elle attend l'après-midi ou le lendemain
 
   // Découpe un créneau qui chevaucherait la pause déjeuner en deux blocs (matin / après-midi).
   function decouperAvecPauseDejeuner(heureDebutJour, dureeJour) {
@@ -243,7 +244,7 @@ export default function Planning() {
     function demarrerNouveauJour() {
       jourCourant =
         jourCourant === null
-          ? jourOuvreDepuis(new Date(new Date().toDateString()))
+          ? prochainLundi(new Date(new Date().toDateString()))
           : jourOuvreSuivant(jourCourant)
       const demarreApresMidi = jourCourant.getDay() === 1
       heureCourante = demarreApresMidi ? HEURE_DEBUT_LUNDI : HEURE_DEBUT_JOUR
@@ -252,9 +253,29 @@ export default function Planning() {
         : HEURE_DEBUT_JOUR + MAX_DUREE_JOUR + (PAUSE_DEJEUNER_FIN - PAUSE_DEJEUNER_DEBUT)
     }
 
+    // Une NOUVELLE formation ne démarre que s'il reste assez de place avant la prochaine coupure
+    // (déjeuner ou fin de journée) ; sinon on saute directement à la coupure suivante plutôt que
+    // de caser un reliquat de 1h juste avant midi. Les blocs suivants de la MÊME formation, eux,
+    // peuvent toujours utiliser un reliquat court (c'est la fin naturelle d'un multi-jours).
+    function garantirPlaceDemarrage(dureeLigne) {
+      while (true) {
+        if (jourCourant === null || capaciteRestanteJour() <= 0) {
+          demarrerNouveauJour()
+          continue
+        }
+        if (capaciteRestanteJour() >= Math.min(dureeLigne, DUREE_MIN_DEMARRAGE_NOUVELLE_FORMATION)) return
+        if (heureCourante < PAUSE_DEJEUNER_DEBUT) {
+          heureCourante = PAUSE_DEJEUNER_FIN
+        } else {
+          demarrerNouveauJour()
+        }
+      }
+    }
+
     for (const ligne of lignesData) {
       const formateur = trouverFormateurPourCode(ligne.formations_catalogue?.code)
       let dureeRestante = ligne.formations_catalogue?.duree_h || 4
+      garantirPlaceDemarrage(dureeRestante)
       while (dureeRestante > 0) {
         if (jourCourant === null || capaciteRestanteJour() <= 0) {
           demarrerNouveauJour()

@@ -50,6 +50,14 @@ export default function Chiffrage() {
     chargerDemande(demandeId)
   }, [demandeId])
 
+  // Dès qu'un scénario est sélectionné et qu'aucune ligne n'existe encore, on génère le devis
+  // théorique automatiquement — pas besoin de cliquer le bouton à chaque ouverture.
+  useEffect(() => {
+    if (!scenarioId || lignes.length > 0) return
+    if (formateurs.length === 0) return
+    genererDepuisPlanning()
+  }, [scenarioId, lignes.length, formateurs.length])
+
   async function chargerDemande(id) {
     setMessage('')
     setSucces('')
