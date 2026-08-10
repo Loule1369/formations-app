@@ -54,6 +54,7 @@ export default function Planning() {
   const [succes, setSucces] = useState('')
   const [blocEnConfirmation, setBlocEnConfirmation] = useState('')
   const [confirmerSuppressionScenario, setConfirmerSuppressionScenario] = useState(false)
+  const [confirmerRegeneration, setConfirmerRegeneration] = useState(false)
   const [redimensionnementEnCours, setRedimensionnementEnCours] = useState(null)
 
   function heureFinDurantRedimensionnement(creneau, hauteurPx) {
@@ -61,9 +62,18 @@ export default function Planning() {
     return decimalEnHeure(Math.min(heureEnDecimal(creneau.heure_debut) + duree, WINDOW_END))
   }
 
-  const formateurCouleur = (formateurId) => {
-    const i = formateurs.findIndex((f) => f.id === formateurId)
-    return PALETTE[i >= 0 ? i % PALETTE.length : 0]
+  // Couleur déterministe par formation (même code = même couleur, quel que soit le projet ou le formateur).
+  function formationCouleur(code) {
+    if (!code) return '#4a4a4a'
+    let hash = 0
+    for (let i = 0; i < code.length; i++) {
+      hash = (hash * 31 + code.charCodeAt(i)) % 997
+    }
+    return PALETTE[Math.abs(hash) % PALETTE.length]
+  }
+
+  function nomFormateur(formateurId) {
+    return formateurs.find((f) => f.id === formateurId)?.nom || '?'
   }
 
   const baseDate = useMemo(() => {
@@ -191,11 +201,13 @@ export default function Planning() {
     return formateurs.find((f) => (f.competences || []).includes(code)) || formateurs[0]
   }
 
-  const MAX_DUREE_JOUR = 7
+  const HEURE_DEBUT_JOUR = 8
+  const MAX_DUREE_JOUR = 8
   const HEURE_DEBUT_LUNDI = 13.5 // le lundi matin est réservé au trajet par défaut
   const MAX_DUREE_DEMARRAGE_APRES_MIDI = 3 // un 1er jour qui démarre l'après-midi (ex. lundi) reste court, le reste bascule le lendemain matin
   const PAUSE_DEJEUNER_DEBUT = 12
   const PAUSE_DEJEUNER_FIN = 13.5
+  const DUREE_MIN_MATINEE_PLEINE = 4 // en dessous, une session matinale isolée est recalée pour finir à midi
 
   // Découpe un créneau qui chevaucherait la pause déjeuner en deux blocs (matin / après-midi).
   function decouperAvecPauseDejeuner(heureDebutJour, dureeJour) {
@@ -234,10 +246,10 @@ export default function Planning() {
           ? jourOuvreDepuis(new Date(new Date().toDateString()))
           : jourOuvreSuivant(jourCourant)
       const demarreApresMidi = jourCourant.getDay() === 1
-      heureCourante = demarreApresMidi ? HEURE_DEBUT_LUNDI : 9
+      heureCourante = demarreApresMidi ? HEURE_DEBUT_LUNDI : HEURE_DEBUT_JOUR
       heureFinJourCourant = demarreApresMidi
         ? HEURE_DEBUT_LUNDI + MAX_DUREE_DEMARRAGE_APRES_MIDI
-        : 9 + MAX_DUREE_JOUR + (PAUSE_DEJEUNER_FIN - PAUSE_DEJEUNER_DEBUT)
+        : HEURE_DEBUT_JOUR + MAX_DUREE_JOUR + (PAUSE_DEJEUNER_FIN - PAUSE_DEJEUNER_DEBUT)
     }
 
     for (const ligne of lignesData) {
@@ -268,6 +280,25 @@ export default function Planning() {
         dureeRestante -= dureeChunk
       }
     }
+
+    // Post-traitement : une session matinale courte (<4h) restée seule ce jour-là (rien l'après-midi)
+    // est recalée pour finir à midi plutôt que de trainer en début de matinée avec un grand vide après.
+    const parJour = {}
+    for (const b of blocs) {
+      if (!parJour[b.date]) parJour[b.date] = []
+      parJour[b.date].push(b)
+    }
+    for (const blocsJour of Object.values(parJour)) {
+      if (blocsJour.length !== 1) continue
+      const b = blocsJour[0]
+      const debut = heureEnDecimal(b.heure_debut)
+      const fin = heureEnDecimal(b.heure_fin)
+      if (debut < PAUSE_DEJEUNER_DEBUT && fin <= PAUSE_DEJEUNER_DEBUT && fin - debut < DUREE_MIN_MATINEE_PLEINE) {
+        b.heure_debut = decimalEnHeure(PAUSE_DEJEUNER_DEBUT - (fin - debut))
+        b.heure_fin = decimalEnHeure(PAUSE_DEJEUNER_DEBUT)
+      }
+    }
+
     await supabase.from('creneaux').insert(blocs)
     await synchroniserDeplacements(scenarioIdCible, demandeIdCible)
   }
@@ -339,7 +370,7 @@ export default function Planning() {
   async function rafraichirDeplacements(scenarioIdCible) {
     const { data } = await supabase
       .from('creneaux')
-      .select('id, type, date, heure_debut, heure_fin, formateur_id, demande_ligne_id, demande_lignes(groupe, formations_catalogue(nom))')
+      .select('id, type, date, heure_debut, heure_fin, formateur_id, demande_ligne_id, demande_lignes(groupe, formations_catalogue(nom, code))')
       .eq('scenario_id', scenarioIdCible)
       .eq('type', 'deplacement')
     setCreneaux((prev) => [...prev.filter((c) => c.type !== 'deplacement'), ...(data || [])])
@@ -354,13 +385,31 @@ export default function Planning() {
     setScenarioId(id)
     setNomCopie('')
     setConfirmerSuppressionScenario(false)
+    setConfirmerRegeneration(false)
     setBlocEnConfirmation('')
     const { data } = await supabase
       .from('creneaux')
-      .select('id, type, date, heure_debut, heure_fin, formateur_id, demande_ligne_id, demande_lignes(groupe, formations_catalogue(nom))')
+      .select('id, type, date, heure_debut, heure_fin, formateur_id, demande_ligne_id, demande_lignes(groupe, formations_catalogue(nom, code))')
       .eq('scenario_id', id)
       .order('date')
     setCreneaux(data || [])
+  }
+
+  // Écrase entièrement le scénario en cours et le régénère avec les règles les plus récentes.
+  // Contrairement à la génération automatique (qui n'a lieu qu'à la toute première ouverture),
+  // ce bouton force le recalcul même si le scénario existe déjà et a été modifié manuellement.
+  async function regenererPlanningComplet() {
+    if (!confirmerRegeneration) {
+      setConfirmerRegeneration(true)
+      return
+    }
+    setConfirmerRegeneration(false)
+    setMessage('')
+    setSucces('')
+    await supabase.from('creneaux').delete().eq('scenario_id', scenarioId)
+    await genererPlanningParDefaut(demandeId, scenarioId, lignes)
+    await chargerScenario(scenarioId)
+    setSucces('Planning régénéré avec les règles actuelles.')
   }
 
   async function dupliquerScenario() {
@@ -456,7 +505,8 @@ export default function Planning() {
       return
     }
     setMessage('')
-    await finaliserMutation()
+    await synchroniserDeplacements(scenarioId, demandeId)
+    await chargerScenario(scenarioId)
   }
 
   // Duplique une formation en un groupe supplémentaire (ex. 2 sessions pour 2 groupes de participants).
@@ -695,6 +745,15 @@ export default function Planning() {
               value={nomCopie}
               onChange={(e) => setNomCopie(e.target.value)}
             />
+            <button
+              type="button"
+              onClick={regenererPlanningComplet}
+              disabled={!scenarioId}
+              className={confirmerRegeneration ? 'bouton-danger' : ''}
+              title="Efface et recalcule tout le planning de ce scénario avec les règles actuelles"
+            >
+              {confirmerRegeneration ? 'Confirmer : tout écraser et régénérer ?' : 'Régénérer le planning'}
+            </button>
             <button type="button" onClick={dupliquerScenario} disabled={!scenarioId}>
               Dupliquer ce scénario
             </button>
@@ -743,10 +802,18 @@ export default function Planning() {
           </div>
 
           <div className="legende-formateurs">
-            {formateurs.map((f) => (
-              <span key={f.id} className="legende-item">
-                <span className="legende-pastille" style={{ background: formateurCouleur(f.id) }} />
-                {f.nom}
+            {Object.values(
+              lignes.reduce((acc, l) => {
+                if (l.formation_id && !acc[l.formation_id]) acc[l.formation_id] = l
+                return acc
+              }, {}),
+            ).map((l) => (
+              <span key={l.formation_id} className="legende-item">
+                <span
+                  className="legende-pastille"
+                  style={{ background: formationCouleur(l.formations_catalogue?.code) }}
+                />
+                {l.formations_catalogue?.nom}
               </span>
             ))}
           </div>
@@ -807,8 +874,8 @@ export default function Planning() {
               {creneaux.map((c) => {
                 const pos = disposition[c.id]
                 if (!pos) return null
-                const couleur = formateurCouleur(c.formateur_id)
                 const estFormation = c.type === 'formation'
+                const couleur = estFormation ? formationCouleur(c.demande_lignes?.formations_catalogue?.code) : '#888'
                 return (
                   <Rnd
                     key={c.id}
@@ -869,7 +936,7 @@ export default function Planning() {
                       </>
                     ) : (
                       <>
-                        <div className="planning-bloc-titre">Déplacement</div>
+                        <div className="planning-bloc-titre">Déplacement — {nomFormateur(c.formateur_id)}</div>
                         <div className="planning-bloc-heures">
                           {c.heure_debut.slice(0, 5)}–{c.heure_fin.slice(0, 5)}
                         </div>

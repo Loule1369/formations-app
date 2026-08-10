@@ -15,6 +15,7 @@ create table formateurs (
   id uuid primary key default gen_random_uuid(),
   nom text not null,
   statut text not null check (statut in ('interne', 'fordoc')),
+  service text,
   base_depart text,
   competences text[] default '{}',
   created_at timestamptz not null default now()
@@ -36,6 +37,7 @@ create table formations_catalogue (
   duree_h numeric not null,
   prerequis text,
   prix numeric,
+  prix_revient numeric,
   created_at timestamptz not null default now()
 );
 
@@ -86,6 +88,9 @@ create table devis_lignes (
   libelle text not null,
   quantite numeric not null default 1,
   prix_unitaire numeric not null default 0,
+  prix_revient numeric not null default 0,
+  categorie text not null default 'autre',
+  origine text,
   created_at timestamptz not null default now()
 );
 

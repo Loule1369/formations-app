@@ -9,8 +9,17 @@ const TARIF_NUIT_HOTEL_PR = 120
 const TARIF_REPAS_PV = 30
 const TARIF_REPAS_PR = 25
 
+const CATEGORIES = ['formation', 'deplacement', 'administratif', 'ascentline', 'autre']
+const CATEGORIE_LABELS = {
+  formation: 'Formations',
+  deplacement: 'Déplacement & hébergement',
+  administratif: 'Administratif',
+  ascentline: 'Licences Ascentline',
+  autre: 'Autres',
+}
+
 function ligneVide() {
-  return { demande_id: '', libelle: 'Nouvelle ligne', quantite: 1, prix_unitaire: 0, prix_revient: 0, origine: null }
+  return { libelle: 'Nouvelle ligne', quantite: 1, prix_unitaire: 0, prix_revient: 0, origine: null, categorie: 'autre' }
 }
 
 export default function Chiffrage() {
@@ -18,10 +27,18 @@ export default function Chiffrage() {
   const [scenarios, setScenarios] = useState([])
   const [scenarioId, setScenarioId] = useState('')
   const [lignes, setLignes] = useState([])
+  const [formateurs, setFormateurs] = useState([])
 
   const [message, setMessage] = useState('')
   const [succes, setSucces] = useState('')
   const [generation, setGeneration] = useState(false)
+
+  useEffect(() => {
+    supabase
+      .from('formateurs')
+      .select('id, nom, service')
+      .then(({ data }) => data && setFormateurs(data))
+  }, [])
 
   useEffect(() => {
     if (!demandeId) {
@@ -50,6 +67,10 @@ export default function Chiffrage() {
   async function chargerLignes(id) {
     const { data } = await supabase.from('devis_lignes').select('*').eq('demande_id', id).order('created_at')
     setLignes(data || [])
+  }
+
+  function serviceDuFormateur(formateurId) {
+    return formateurs.find((f) => f.id === formateurId)?.service || 'Autre service'
   }
 
   async function genererDepuisPlanning() {
@@ -84,54 +105,68 @@ export default function Chiffrage() {
           prix_unitaire: dl.formations_catalogue?.prix || 0,
           prix_revient: dl.formations_catalogue?.prix_revient || 0,
           origine: 'planning',
+          categorie: 'formation',
         }))
 
-      // Nuits d'hôtel et repas déduits des missions (regroupement par formateur, weekends = retour au domicile).
+      // Nuits d'hôtel et repas déduits des missions, ventilés par service du formateur (FORDOC, SAV, DIH...).
       const parFormateur = {}
       for (const c of deplacements) {
         if (!parFormateur[c.formateur_id]) parFormateur[c.formateur_id] = []
         parFormateur[c.formateur_id].push(c.date)
       }
-      let totalNuits = 0
-      for (const dates of Object.values(parFormateur)) {
+      const nuitsParService = {}
+      for (const [formateurId, dates] of Object.entries(parFormateur)) {
+        const service = serviceDuFormateur(formateurId)
         const tri = [...new Set(dates)].sort()
         for (const voyage of grouperVoyages(tri)) {
           const nuits = Math.round(
             (new Date(voyage.fin + 'T00:00:00').getTime() - new Date(voyage.debut + 'T00:00:00').getTime()) /
               (24 * 60 * 60 * 1000),
           )
-          totalNuits += Math.max(nuits, 0)
+          nuitsParService[service] = (nuitsParService[service] || 0) + Math.max(nuits, 0)
         }
       }
-      const joursFormation = new Set(formations.map((c) => `${c.formateur_id}|${c.date}`)).size
+
+      const joursParService = {}
+      for (const c of formations) {
+        const service = serviceDuFormateur(c.formateur_id)
+        const cle = `${service}|${c.formateur_id}|${c.date}`
+        joursParService[service] = joursParService[service] || new Set()
+        joursParService[service].add(cle)
+      }
 
       const lignesFrais = []
-      if (totalNuits > 0) {
+      for (const [service, nuits] of Object.entries(nuitsParService)) {
+        if (nuits <= 0) continue
         lignesFrais.push({
           demande_id: demandeId,
-          libelle: "Nuits d'hôtel formateur",
-          quantite: totalNuits,
+          libelle: `Nuits d'hôtel — ${service}`,
+          quantite: nuits,
           prix_unitaire: TARIF_NUIT_HOTEL_PV,
           prix_revient: TARIF_NUIT_HOTEL_PR,
           origine: 'planning',
+          categorie: 'deplacement',
         })
         lignesFrais.push({
           demande_id: demandeId,
-          libelle: 'Repas soir (déplacement)',
-          quantite: totalNuits,
+          libelle: `Repas soir — ${service}`,
+          quantite: nuits,
           prix_unitaire: TARIF_REPAS_PV,
           prix_revient: TARIF_REPAS_PR,
           origine: 'planning',
+          categorie: 'deplacement',
         })
       }
-      if (joursFormation > 0) {
+      for (const [service, joursSet] of Object.entries(joursParService)) {
+        if (joursSet.size === 0) continue
         lignesFrais.push({
           demande_id: demandeId,
-          libelle: 'Repas midi (jours de formation)',
-          quantite: joursFormation,
+          libelle: `Repas midi — ${service}`,
+          quantite: joursSet.size,
           prix_unitaire: TARIF_REPAS_PV,
           prix_revient: TARIF_REPAS_PR,
           origine: 'planning',
+          categorie: 'deplacement',
         })
       }
 
@@ -142,7 +177,7 @@ export default function Chiffrage() {
       }
       await chargerLignes(demandeId)
       setSucces(
-        `Devis généré : ${lignesFormations.length} formation(s), ${totalNuits} nuit(s) d'hôtel, ${joursFormation} jour(s) de repas midi. Vous pouvez tout ajuster ci-dessous.`,
+        `Devis généré : ${lignesFormations.length} formation(s), frais de déplacement ventilés par service. Vous pouvez tout ajuster ci-dessous.`,
       )
     } catch (err) {
       setMessage(err.message)
@@ -151,10 +186,10 @@ export default function Chiffrage() {
     }
   }
 
-  async function ajouterLigneLibre() {
+  async function ajouterLigneLibre(categorie) {
     const { data, error } = await supabase
       .from('devis_lignes')
-      .insert({ ...ligneVide(), demande_id: demandeId })
+      .insert({ ...ligneVide(), demande_id: demandeId, categorie })
       .select('*')
       .single()
     if (error) {
@@ -178,6 +213,7 @@ export default function Chiffrage() {
         quantite: Number(ligne.quantite) || 0,
         prix_unitaire: Number(ligne.prix_unitaire) || 0,
         prix_revient: Number(ligne.prix_revient) || 0,
+        categorie: ligne.categorie,
       })
       .eq('id', id)
   }
@@ -187,10 +223,13 @@ export default function Chiffrage() {
     setLignes((prev) => prev.filter((l) => l.id !== id))
   }
 
-  const totalPV = lignes.reduce((s, l) => s + Number(l.quantite || 0) * Number(l.prix_unitaire || 0), 0)
-  const totalPR = lignes.reduce((s, l) => s + Number(l.quantite || 0) * Number(l.prix_revient || 0), 0)
-  const margeTotale = totalPV - totalPR
-  const tauxMarge = totalPV > 0 ? (margeTotale / totalPV) * 100 : 0
+  function totaux(liste) {
+    const pv = liste.reduce((s, l) => s + Number(l.quantite || 0) * Number(l.prix_unitaire || 0), 0)
+    const pr = liste.reduce((s, l) => s + Number(l.quantite || 0) * Number(l.prix_revient || 0), 0)
+    return { pv, pr, marge: pv - pr, taux: pv > 0 ? ((pv - pr) / pv) * 100 : 0 }
+  }
+
+  const totalGeneral = totaux(lignes)
 
   if (!demandeId) {
     return (
@@ -222,100 +261,132 @@ export default function Chiffrage() {
         </button>
       </div>
       <p className="astuce">
-        Ce bouton (re)calcule uniquement les lignes automatiques (formations, nuits, repas) à partir
-        du planning — pratique pour repartir d'un chiffrage théorique propre. Les lignes que vous
-        ajoutez à la main (ex. licences Ascentline) ne sont jamais touchées.
+        Ce bouton (re)calcule uniquement les lignes automatiques (formations, nuits, repas — ventilées
+        par service de formateur) à partir du planning. Les lignes ajoutées à la main (administratif,
+        licences Ascentline...) ne sont jamais touchées.
       </p>
 
       {message && <p className="message erreur">{message}</p>}
       {succes && <p className="message succes">{succes}</p>}
 
-      <div className="table-devis-scroll">
-        <table className="table-devis">
-          <thead>
-            <tr>
-              <th>Libellé</th>
-              <th>Origine</th>
-              <th>Qté</th>
-              <th>PV unitaire HT</th>
-              <th>PR unitaire HT</th>
-              <th>Total PV HT</th>
-              <th>Total PR HT</th>
-              <th>Marge</th>
-              <th>Taux marge</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {lignes.map((l) => {
-              const totalLignePV = Number(l.quantite || 0) * Number(l.prix_unitaire || 0)
-              const totalLignePR = Number(l.quantite || 0) * Number(l.prix_revient || 0)
-              const margeLigne = totalLignePV - totalLignePR
-              const tauxLigne = totalLignePV > 0 ? (margeLigne / totalLignePV) * 100 : 0
-              return (
-                <tr key={l.id}>
-                  <td>
-                    <input
-                      type="text"
-                      value={l.libelle}
-                      onChange={(e) => modifierLigneLocal(l.id, 'libelle', e.target.value)}
-                      onBlur={() => sauvegarderLigne(l.id)}
-                    />
-                  </td>
-                  <td>
-                    <span className={`badge-origine ${l.origine === 'planning' ? 'auto' : 'manuel'}`}>
-                      {l.origine === 'planning' ? 'Planning' : 'Manuel'}
-                    </span>
-                  </td>
-                  <td>
-                    <input
-                      type="number"
-                      min="0"
-                      value={l.quantite}
-                      onChange={(e) => modifierLigneLocal(l.id, 'quantite', e.target.value)}
-                      onBlur={() => sauvegarderLigne(l.id)}
-                    />
-                  </td>
-                  <td>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={l.prix_unitaire}
-                      onChange={(e) => modifierLigneLocal(l.id, 'prix_unitaire', e.target.value)}
-                      onBlur={() => sauvegarderLigne(l.id)}
-                    />
-                  </td>
-                  <td>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={l.prix_revient}
-                      onChange={(e) => modifierLigneLocal(l.id, 'prix_revient', e.target.value)}
-                      onBlur={() => sauvegarderLigne(l.id)}
-                    />
-                  </td>
-                  <td>{totalLignePV.toFixed(2)} €</td>
-                  <td>{totalLignePR.toFixed(2)} €</td>
-                  <td>{margeLigne.toFixed(2)} €</td>
-                  <td>{totalLignePV > 0 ? `${tauxLigne.toFixed(0)}%` : '—'}</td>
-                  <td>
-                    <button type="button" onClick={() => supprimerLigne(l.id)}>×</button>
-                  </td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
-
-      <button type="button" onClick={ajouterLigneLibre}>+ Ajouter une ligne libre</button>
+      {CATEGORIES.map((cat) => {
+        const lignesCat = lignes.filter((l) => l.categorie === cat)
+        const t = totaux(lignesCat)
+        return (
+          <section key={cat} className="section-devis">
+            <h2>{CATEGORIE_LABELS[cat]}</h2>
+            {lignesCat.length === 0 ? (
+              <p className="astuce">Aucune ligne.</p>
+            ) : (
+              <div className="table-devis-scroll">
+                <table className="table-devis">
+                  <thead>
+                    <tr>
+                      <th>Libellé</th>
+                      <th>Origine</th>
+                      <th>Qté</th>
+                      <th>PV unitaire HT</th>
+                      <th>PR unitaire HT</th>
+                      <th>Total PV HT</th>
+                      <th>Total PR HT</th>
+                      <th>Marge</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {lignesCat.map((l) => {
+                      const totalLignePV = Number(l.quantite || 0) * Number(l.prix_unitaire || 0)
+                      const totalLignePR = Number(l.quantite || 0) * Number(l.prix_revient || 0)
+                      return (
+                        <tr key={l.id}>
+                          <td>
+                            <input
+                              type="text"
+                              value={l.libelle}
+                              onChange={(e) => modifierLigneLocal(l.id, 'libelle', e.target.value)}
+                              onBlur={() => sauvegarderLigne(l.id)}
+                            />
+                          </td>
+                          <td>
+                            <span className={`badge-origine ${l.origine === 'planning' ? 'auto' : 'manuel'}`}>
+                              {l.origine === 'planning' ? 'Planning' : 'Manuel'}
+                            </span>
+                          </td>
+                          <td>
+                            <input
+                              type="number"
+                              min="0"
+                              value={l.quantite}
+                              onChange={(e) => modifierLigneLocal(l.id, 'quantite', e.target.value)}
+                              onBlur={() => sauvegarderLigne(l.id)}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={l.prix_unitaire}
+                              onChange={(e) => modifierLigneLocal(l.id, 'prix_unitaire', e.target.value)}
+                              onBlur={() => sauvegarderLigne(l.id)}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={l.prix_revient}
+                              onChange={(e) => modifierLigneLocal(l.id, 'prix_revient', e.target.value)}
+                              onBlur={() => sauvegarderLigne(l.id)}
+                            />
+                          </td>
+                          <td>{totalLignePV.toFixed(2)} €</td>
+                          <td>{totalLignePR.toFixed(2)} €</td>
+                          <td>{(totalLignePV - totalLignePR).toFixed(2)} €</td>
+                          <td>
+                            <button type="button" onClick={() => supprimerLigne(l.id)}>×</button>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                  <tfoot>
+                    <tr>
+                      <td colSpan={5}>
+                        <strong>Sous-total {CATEGORIE_LABELS[cat]}</strong>
+                      </td>
+                      <td><strong>{t.pv.toFixed(2)} €</strong></td>
+                      <td><strong>{t.pr.toFixed(2)} €</strong></td>
+                      <td><strong>{t.marge.toFixed(2)} € ({t.taux.toFixed(0)}%)</strong></td>
+                      <td></td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            )}
+            <button type="button" onClick={() => ajouterLigneLibre(cat)}>
+              + Ajouter une ligne « {CATEGORIE_LABELS[cat]} »
+            </button>
+          </section>
+        )
+      })}
 
       <div className="recap-devis">
-        <p>Total prix de vente HT : <strong>{totalPV.toFixed(2)} €</strong></p>
-        <p>Total prix de revient HT : <strong>{totalPR.toFixed(2)} €</strong></p>
-        <p>Marge : <strong>{margeTotale.toFixed(2)} €</strong> ({tauxMarge.toFixed(0)}%)</p>
+        <h2>Récapitulatif</h2>
+        {CATEGORIES.map((cat) => {
+          const t = totaux(lignes.filter((l) => l.categorie === cat))
+          if (t.pv === 0 && t.pr === 0) return null
+          return (
+            <p key={cat}>
+              {CATEGORIE_LABELS[cat]} : <strong>{t.pv.toFixed(2)} €</strong> (marge {t.marge.toFixed(2)} €)
+            </p>
+          )
+        })}
+        <hr />
+        <p>Total prix de vente HT : <strong>{totalGeneral.pv.toFixed(2)} €</strong></p>
+        <p>Total prix de revient HT : <strong>{totalGeneral.pr.toFixed(2)} €</strong></p>
+        <p>Marge : <strong>{totalGeneral.marge.toFixed(2)} €</strong> ({totalGeneral.taux.toFixed(0)}%)</p>
       </div>
     </div>
   )

@@ -325,6 +325,18 @@
   width: 6rem;
 }
 
+.table-devis tfoot td {
+  border-top: 2px solid #ccc;
+  border-bottom: none;
+  background: #fafafa;
+}
+
+.section-devis {
+  margin-bottom: 2rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid #eee;
+}
+
 .recap-devis {
   margin-top: 1rem;
   padding: 1rem;
