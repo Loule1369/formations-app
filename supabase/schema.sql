@@ -99,12 +99,13 @@ alter table scenarios enable row level security;
 alter table creneaux enable row level security;
 alter table devis_lignes enable row level security;
 
-create policy "allow all - clients" on clients for all using (true) with check (true);
-create policy "allow all - formateurs" on formateurs for all using (true) with check (true);
-create policy "allow all - absences" on absences for all using (true) with check (true);
-create policy "allow all - formations_catalogue" on formations_catalogue for all using (true) with check (true);
-create policy "allow all - demandes" on demandes for all using (true) with check (true);
-create policy "allow all - demande_lignes" on demande_lignes for all using (true) with check (true);
-create policy "allow all - scenarios" on scenarios for all using (true) with check (true);
-create policy "allow all - creneaux" on creneaux for all using (true) with check (true);
-create policy "allow all - devis_lignes" on devis_lignes for all using (true) with check (true);
+-- Accès réservé aux utilisateurs authentifiés (voir supabase/migrations/004_auth_required.sql).
+create policy "authentifie - clients" on clients for all using (auth.uid() is not null) with check (auth.uid() is not null);
+create policy "authentifie - formateurs" on formateurs for all using (auth.uid() is not null) with check (auth.uid() is not null);
+create policy "authentifie - absences" on absences for all using (auth.uid() is not null) with check (auth.uid() is not null);
+create policy "authentifie - formations_catalogue" on formations_catalogue for all using (auth.uid() is not null) with check (auth.uid() is not null);
+create policy "authentifie - demandes" on demandes for all using (auth.uid() is not null) with check (auth.uid() is not null);
+create policy "authentifie - demande_lignes" on demande_lignes for all using (auth.uid() is not null) with check (auth.uid() is not null);
+create policy "authentifie - scenarios" on scenarios for all using (auth.uid() is not null) with check (auth.uid() is not null);
+create policy "authentifie - creneaux" on creneaux for all using (auth.uid() is not null) with check (auth.uid() is not null);
+create policy "authentifie - devis_lignes" on devis_lignes for all using (auth.uid() is not null) with check (auth.uid() is not null);

@@ -23,6 +23,27 @@
   opacity: 1;
 }
 
+.nav-spacer {
+  flex: 1;
+}
+
+.nav-utilisateur {
+  align-self: center;
+  font-size: 0.85rem;
+  color: #666;
+}
+
+.lien-mode {
+  display: block;
+  margin: 1rem auto 0;
+  max-width: 720px;
+  background: none;
+  border: none;
+  color: #2e5c8a;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .form-besoin fieldset {
   margin-bottom: 1.5rem;
   border: 1px solid #ddd;
