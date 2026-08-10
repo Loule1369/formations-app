@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Rnd } from 'react-rnd'
 import { supabase } from '../lib/supabaseClient'
+import { JOUR_MS, heureEnDecimal, decimalEnHeure, dureeHeures, formatDate, parseDate, grouperVoyages } from '../lib/dates'
 
 const HOUR_HEIGHT = 36
 const WINDOW_START = 7
@@ -10,40 +11,9 @@ const DAY_WIDTH = 170
 const HEADER_HEIGHT = 44
 const LEFT_COL_WIDTH = 52
 const DAYS_SHOWN = 21
-const JOUR_MS = 24 * 60 * 60 * 1000
 const DUREE_DEPLACEMENT = 3
 
 const PALETTE = ['#2e5c8a', '#8a2e5c', '#2e8a5c', '#8a6b2e', '#5c2e8a', '#2e8a8a', '#8a2e2e', '#4a4a4a']
-
-function heureEnDecimal(hhmmss) {
-  const [h, m] = hhmmss.split(':').map(Number)
-  return h + m / 60
-}
-
-function decimalEnHeure(dec) {
-  const snap = Math.round(dec * 2) / 2
-  const h = Math.floor(snap)
-  const m = snap - h === 0.5 ? '30' : '00'
-  return `${String(h).padStart(2, '0')}:${m}:00`
-}
-
-function dureeHeures(debut, fin) {
-  return Math.max(0.5, heureEnDecimal(fin) - heureEnDecimal(debut))
-}
-
-// Toujours raisonner en heure locale : toISOString() (UTC) décale la date d'un jour
-// pour un utilisateur en France dès qu'on manipule un minuit local.
-function formatDate(date) {
-  const y = date.getFullYear()
-  const m = String(date.getMonth() + 1).padStart(2, '0')
-  const j = String(date.getDate()).padStart(2, '0')
-  return `${y}-${m}-${j}`
-}
-
-// Parse une date stockée ("YYYY-MM-DD") en minuit LOCAL, jamais en UTC.
-function parseDate(dateStr) {
-  return new Date(dateStr + 'T00:00:00')
-}
 
 // Répartit des blocs qui se chevauchent dans le temps en couloirs (coloration d'intervalles).
 function assignerLanes(blocs) {
@@ -275,43 +245,6 @@ export default function Planning() {
     await synchroniserDeplacements(scenarioIdCible, demandeIdCible)
   }
 
-  // Un même formateur reste sur place tant que l'écart entre deux jours de mission ne dépasse pas
-  // un jour creux isolé (ex. un mardi sans formation au milieu d'une semaine). En revanche, dès
-  // qu'un week-end s'intercale, il rentre chez lui : retour le vendredi soir, aller le lundi matin.
-  const ECART_MAX_MEME_MISSION = 2
-
-  function intervalleContientWeekend(dateDebut, dateFin) {
-    let d = parseDate(dateDebut)
-    const fin = parseDate(dateFin)
-    d.setTime(d.getTime() + JOUR_MS)
-    while (d < fin) {
-      if (d.getDay() === 0 || d.getDay() === 6) return true
-      d.setTime(d.getTime() + JOUR_MS)
-    }
-    return false
-  }
-
-  function grouperVoyages(blocsTries) {
-    const groupes = []
-    let courant = null
-    for (const bloc of blocsTries) {
-      if (!courant) {
-        courant = { debut: bloc.date, fin: bloc.date }
-      } else {
-        const ecart = Math.round((parseDate(bloc.date).getTime() - parseDate(courant.fin).getTime()) / JOUR_MS)
-        const traverseWeekend = intervalleContientWeekend(courant.fin, bloc.date)
-        if (!traverseWeekend && ecart <= ECART_MAX_MEME_MISSION) {
-          courant.fin = bloc.date
-        } else {
-          groupes.push(courant)
-          courant = { debut: bloc.date, fin: bloc.date }
-        }
-      }
-    }
-    if (courant) groupes.push(courant)
-    return groupes
-  }
-
   // Recalcule entièrement les blocs "Déplacement" (avant/après chaque mission) à partir
   // des blocs "Formation" actuels : un aller la veille du 1er jour, un retour le soir du dernier jour.
   async function synchroniserDeplacements(scenarioIdCible, demandeIdCible) {
@@ -333,7 +266,7 @@ export default function Planning() {
     const nouveauxDeplacements = []
     for (const [formateurId, blocs] of Object.entries(parFormateur)) {
       const tri = [...blocs].sort((a, b) => a.date.localeCompare(b.date))
-      for (const voyage of grouperVoyages(tri)) {
+      for (const voyage of grouperVoyages(tri.map((b) => b.date))) {
         const debutEstLundi = parseDate(voyage.debut).getDay() === 1
         // Le lundi, le trajet se fait le matin même (pas de déplacement le dimanche par défaut).
         const arrivee = debutEstLundi

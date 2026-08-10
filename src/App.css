@@ -250,3 +250,27 @@
   line-height: 1;
   padding: 0 2px;
 }
+
+.table-devis {
+  width: 100%;
+  max-width: 900px;
+  border-collapse: collapse;
+  margin: 1rem 0;
+}
+
+.table-devis th,
+.table-devis td {
+  border-bottom: 1px solid #eee;
+  padding: 0.4rem;
+  text-align: left;
+}
+
+.table-devis input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.3rem;
+}
+
+.table-devis input[type='number'] {
+  width: 6rem;
+}
