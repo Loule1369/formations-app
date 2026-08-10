@@ -57,6 +57,12 @@ export default function Planning() {
   const [succes, setSucces] = useState('')
   const [blocEnConfirmation, setBlocEnConfirmation] = useState('')
   const [confirmerSuppressionScenario, setConfirmerSuppressionScenario] = useState(false)
+  const [redimensionnementEnCours, setRedimensionnementEnCours] = useState(null)
+
+  function heureFinDurantRedimensionnement(creneau, hauteurPx) {
+    const duree = Math.max(0.5, Math.round((hauteurPx / HOUR_HEIGHT) * 2) / 2)
+    return decimalEnHeure(Math.min(heureEnDecimal(creneau.heure_debut) + duree, WINDOW_END))
+  }
 
   const formateurCouleur = (formateurId) => {
     const i = formateurs.findIndex((f) => f.id === formateurId)
@@ -277,9 +283,51 @@ export default function Planning() {
     }
   }
 
+  async function rafraichirDeplacements(scenarioIdCible) {
+    const { data } = await supabase
+      .from('creneaux')
+      .select('id, type, date, heure_debut, heure_fin, formateur_id, demande_ligne_id, demande_lignes(formations_catalogue(nom))')
+      .eq('scenario_id', scenarioIdCible)
+      .eq('type', 'deplacement')
+    setCreneaux((prev) => [...prev.filter((c) => c.type !== 'deplacement'), ...(data || [])])
+  }
+
   async function finaliserMutation() {
     await synchroniserDeplacements(scenarioId, demandeId)
-    await chargerScenario(scenarioId)
+    await rafraichirDeplacements(scenarioId)
+  }
+
+  // Règles bloquantes locales (pas de réseau, donc pas de flash visuel) : week-end, 10h max/jour, 11h de repos.
+  function violationLocale(formateurId, date, heureDebut, heureFin, excluId) {
+    const jourSemaine = new Date(date + 'T00:00:00').getDay()
+    if (jourSemaine === 0 || jourSemaine === 6) {
+      return 'Pas de formation le week-end.'
+    }
+
+    const memeJour = (c) => c.formateur_id === formateurId && c.date === date && c.id !== excluId
+    const total =
+      creneaux.filter(memeJour).reduce((s, c) => s + dureeHeures(c.heure_debut, c.heure_fin), 0) +
+      dureeHeures(heureDebut, heureFin)
+    if (total > 10) {
+      return `Dépasse 10h de travail dans la journée pour ce formateur (${total.toFixed(1)}h).`
+    }
+
+    const veille = formatDate(new Date(new Date(date).getTime() - JOUR_MS))
+    const blocsVeille = creneaux.filter((c) => c.formateur_id === formateurId && c.date === veille && c.id !== excluId)
+    if (blocsVeille.length > 0) {
+      const finVeille = Math.max(...blocsVeille.map((c) => heureEnDecimal(c.heure_fin)))
+      const repos = 24 - finVeille + heureEnDecimal(heureDebut)
+      if (repos < 11) return `Repos insuffisant avec la veille (${repos.toFixed(1)}h, 11h minimum).`
+    }
+
+    const lendemain = formatDate(new Date(new Date(date).getTime() + JOUR_MS))
+    const blocsLendemain = creneaux.filter((c) => c.formateur_id === formateurId && c.date === lendemain && c.id !== excluId)
+    if (blocsLendemain.length > 0) {
+      const debutLendemain = Math.min(...blocsLendemain.map((c) => heureEnDecimal(c.heure_debut)))
+      const repos = 24 - heureEnDecimal(heureFin) + debutLendemain
+      if (repos < 11) return `Repos insuffisant avec le lendemain (${repos.toFixed(1)}h, 11h minimum).`
+    }
+    return null
   }
 
   async function chargerScenario(id) {
@@ -435,6 +483,24 @@ export default function Planning() {
     const nouvelleHeureDebut = decimalEnHeure(heureDebutSnap)
     const nouvelleHeureFin = decimalEnHeure(heureDebutSnap + duree)
 
+    if (nouvelleDate === creneau.date && nouvelleHeureDebut === creneau.heure_debut) return
+
+    const violation = violationLocale(creneau.formateur_id, nouvelleDate, nouvelleHeureDebut, nouvelleHeureFin, creneau.id)
+    if (violation) {
+      setMessage(violation)
+      setCreneaux((prev) => [...prev])
+      return
+    }
+
+    setMessage('')
+    setCreneaux((prev) =>
+      prev.map((c) =>
+        c.id === creneau.id
+          ? { ...c, date: nouvelleDate, heure_debut: nouvelleHeureDebut, heure_fin: nouvelleHeureFin }
+          : c,
+      ),
+    )
+
     const conflit = await conflitAvecPlanningsRetenus(
       creneau.formateur_id,
       nouvelleDate,
@@ -444,18 +510,16 @@ export default function Planning() {
     )
     if (conflit) {
       setMessage(conflit)
-      setCreneaux((prev) => [...prev])
+      setCreneaux((prev) => prev.map((c) => (c.id === creneau.id ? creneau : c)))
       return
     }
 
-    setMessage('')
     await supabase
       .from('creneaux')
       .update({ date: nouvelleDate, heure_debut: nouvelleHeureDebut, heure_fin: nouvelleHeureFin })
       .eq('id', creneau.id)
 
     if (creneau.type === 'formation') await finaliserMutation()
-    else await chargerScenario(scenarioId)
   }
 
   async function redimensionnerBloc(creneau, hauteurPx) {
@@ -464,6 +528,18 @@ export default function Planning() {
     const nouvelleHeureFin = decimalEnHeure(
       Math.min(heureEnDecimal(creneau.heure_debut) + duree, WINDOW_END),
     )
+
+    if (nouvelleHeureFin === creneau.heure_fin) return
+
+    const violation = violationLocale(creneau.formateur_id, creneau.date, creneau.heure_debut, nouvelleHeureFin, creneau.id)
+    if (violation) {
+      setMessage(violation)
+      setCreneaux((prev) => [...prev])
+      return
+    }
+
+    setMessage('')
+    setCreneaux((prev) => prev.map((c) => (c.id === creneau.id ? { ...c, heure_fin: nouvelleHeureFin } : c)))
 
     const conflit = await conflitAvecPlanningsRetenus(
       creneau.formateur_id,
@@ -474,16 +550,24 @@ export default function Planning() {
     )
     if (conflit) {
       setMessage(conflit)
-      setCreneaux((prev) => [...prev])
+      setCreneaux((prev) => prev.map((c) => (c.id === creneau.id ? creneau : c)))
       return
     }
 
-    setMessage('')
     await supabase.from('creneaux').update({ heure_fin: nouvelleHeureFin }).eq('id', creneau.id)
     await finaliserMutation()
   }
 
   async function changerFormateurBloc(creneau, nouveauFormateurId) {
+    const violation = violationLocale(nouveauFormateurId, creneau.date, creneau.heure_debut, creneau.heure_fin, creneau.id)
+    if (violation) {
+      setMessage(violation)
+      return
+    }
+
+    setMessage('')
+    setCreneaux((prev) => prev.map((c) => (c.id === creneau.id ? { ...c, formateur_id: nouveauFormateurId } : c)))
+
     const conflit = await conflitAvecPlanningsRetenus(
       nouveauFormateurId,
       creneau.date,
@@ -493,9 +577,10 @@ export default function Planning() {
     )
     if (conflit) {
       setMessage(conflit)
+      setCreneaux((prev) => prev.map((c) => (c.id === creneau.id ? creneau : c)))
       return
     }
-    setMessage('')
+
     await supabase.from('creneaux').update({ formateur_id: nouveauFormateurId }).eq('id', creneau.id)
     await finaliserMutation()
   }
@@ -673,7 +758,13 @@ export default function Planning() {
                     resizeGrid={[DAY_WIDTH, HOUR_HEIGHT / 2]}
                     cancel=".planning-bloc-select, .planning-bloc-supprimer"
                     onDragStop={(e, d) => deplacerBloc(c, d.x, d.y)}
-                    onResizeStop={(e, dir, ref) => redimensionnerBloc(c, ref.offsetHeight)}
+                    onResize={(e, dir, ref) =>
+                      setRedimensionnementEnCours({ id: c.id, heureFin: heureFinDurantRedimensionnement(c, ref.offsetHeight) })
+                    }
+                    onResizeStop={(e, dir, ref) => {
+                      setRedimensionnementEnCours(null)
+                      redimensionnerBloc(c, ref.offsetHeight)
+                    }}
                     className={`planning-bloc ${c.type}`}
                     style={{ background: couleur }}
                   >
@@ -689,7 +780,13 @@ export default function Planning() {
                     <div className="planning-bloc-titre">
                       {estFormation ? c.demande_lignes?.formations_catalogue?.nom : 'Déplacement (auto)'}
                     </div>
-                    <div className="planning-bloc-heures">{c.heure_debut.slice(0, 5)}–{c.heure_fin.slice(0, 5)}</div>
+                    <div className="planning-bloc-heures">
+                      {c.heure_debut.slice(0, 5)}–
+                      {(redimensionnementEnCours?.id === c.id
+                        ? redimensionnementEnCours.heureFin
+                        : c.heure_fin
+                      ).slice(0, 5)}
+                    </div>
                     {estFormation && (
                       <select
                         className="planning-bloc-select"
