@@ -172,6 +172,18 @@ export default function Planning() {
     chargerScenario(scenariosList[0].id)
   }
 
+  // Premier jour ouvré à partir d'une date INCLUSE (utilisé pour le tout premier bloc : si on
+  // planifie un lundi, le plan par défaut peut démarrer ce lundi même, pas le mardi suivant).
+  function jourOuvreDepuis(date) {
+    const d = new Date(date)
+    while (d.getDay() === 0 || d.getDay() === 6) {
+      d.setTime(d.getTime() + JOUR_MS)
+    }
+    return d
+  }
+
+  // Prochain jour ouvré APRÈS une date (exclue) : utilisé pour tous les blocs suivants, afin de ne
+  // jamais réutiliser le même jour que le bloc précédent.
   function jourOuvreSuivant(date) {
     const d = new Date(date)
     do {
@@ -190,13 +202,16 @@ export default function Planning() {
 
   async function genererPlanningParDefaut(demandeIdCible, scenarioIdCible, lignesData) {
     if (!lignesData || lignesData.length === 0 || formateurs.length === 0) return
-    let jourCourant = new Date(new Date().toDateString())
+    let jourCourant = null
     const blocs = []
     for (const ligne of lignesData) {
       const formateur = trouverFormateurPourCode(ligne.formations_catalogue?.code)
       let dureeRestante = ligne.formations_catalogue?.duree_h || 4
       while (dureeRestante > 0) {
-        jourCourant = jourOuvreSuivant(jourCourant)
+        jourCourant =
+          jourCourant === null
+            ? jourOuvreDepuis(new Date(new Date().toDateString()))
+            : jourOuvreSuivant(jourCourant)
         const heureDebutJour = jourCourant.getDay() === 1 ? HEURE_DEBUT_LUNDI : 9
         const dureeJour = Math.min(dureeRestante, MAX_DUREE_JOUR, WINDOW_END - heureDebutJour)
         blocs.push({
