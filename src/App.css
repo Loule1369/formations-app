@@ -78,6 +78,11 @@
   color: #1e7a1e;
 }
 
+.message.info {
+  background: #eaf1fb;
+  color: #2e5c8a;
+}
+
 .liste-demandes {
   list-style: none;
   padding: 0;

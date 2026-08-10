@@ -176,6 +176,7 @@ export default function Planning() {
   }
 
   const MAX_DUREE_JOUR = 7
+  const HEURE_DEBUT_LUNDI = 13.5 // le lundi matin est réservé au trajet par défaut
 
   async function genererPlanningParDefaut(demandeIdCible, scenarioIdCible, lignesData) {
     if (!lignesData || lignesData.length === 0 || formateurs.length === 0) return
@@ -186,7 +187,8 @@ export default function Planning() {
       let dureeRestante = ligne.formations_catalogue?.duree_h || 4
       while (dureeRestante > 0) {
         jourCourant = jourOuvreSuivant(jourCourant)
-        const dureeJour = Math.min(dureeRestante, MAX_DUREE_JOUR)
+        const heureDebutJour = jourCourant.getDay() === 1 ? HEURE_DEBUT_LUNDI : 9
+        const dureeJour = Math.min(dureeRestante, MAX_DUREE_JOUR, WINDOW_END - heureDebutJour)
         blocs.push({
           demande_id: demandeIdCible,
           demande_ligne_id: ligne.id,
@@ -194,8 +196,8 @@ export default function Planning() {
           formateur_id: formateur.id,
           type: 'formation',
           date: formatDate(jourCourant),
-          heure_debut: '09:00:00',
-          heure_fin: decimalEnHeure(9 + dureeJour),
+          heure_debut: decimalEnHeure(heureDebutJour),
+          heure_fin: decimalEnHeure(heureDebutJour + dureeJour),
         })
         dureeRestante -= dureeJour
       }
@@ -250,16 +252,26 @@ export default function Planning() {
     for (const [formateurId, blocs] of Object.entries(parFormateur)) {
       const tri = [...blocs].sort((a, b) => a.date.localeCompare(b.date))
       for (const voyage of grouperVoyages(tri)) {
-        const veille = formatDate(new Date(new Date(voyage.debut).getTime() - JOUR_MS))
+        const debutEstLundi = new Date(voyage.debut + 'T00:00:00').getDay() === 1
+        // Le lundi, le trajet se fait le matin même (pas de déplacement le dimanche par défaut).
+        const arrivee = debutEstLundi
+          ? {
+              date: voyage.debut,
+              heure_debut: decimalEnHeure(WINDOW_START),
+              heure_fin: decimalEnHeure(WINDOW_START + DUREE_DEPLACEMENT),
+            }
+          : {
+              date: formatDate(new Date(new Date(voyage.debut).getTime() - JOUR_MS)),
+              heure_debut: decimalEnHeure(WINDOW_END - DUREE_DEPLACEMENT),
+              heure_fin: decimalEnHeure(WINDOW_END),
+            }
         nouveauxDeplacements.push({
           demande_id: demandeIdCible,
           demande_ligne_id: null,
           scenario_id: scenarioIdCible,
           formateur_id: formateurId,
           type: 'deplacement',
-          date: veille,
-          heure_debut: decimalEnHeure(WINDOW_END - DUREE_DEPLACEMENT),
-          heure_fin: decimalEnHeure(WINDOW_END),
+          ...arrivee,
         })
 
         const blocsDernierJour = tri.filter((b) => b.date === voyage.fin)
@@ -296,13 +308,10 @@ export default function Planning() {
     await rafraichirDeplacements(scenarioId)
   }
 
-  // Règles bloquantes locales (pas de réseau, donc pas de flash visuel) : week-end, 10h max/jour, 11h de repos.
+  // Règles bloquantes locales (pas de réseau, donc pas de flash visuel) : uniquement les règles
+  // légales (10h max/jour, 11h de repos), non négociables. Le week-end/lundi matin ne sont que des
+  // défauts à la génération automatique : le chef de projet reste libre de déplacer un bloc où il veut.
   function violationLocale(formateurId, date, heureDebut, heureFin, excluId) {
-    const jourSemaine = new Date(date + 'T00:00:00').getDay()
-    if (jourSemaine === 0 || jourSemaine === 6) {
-      return 'Pas de formation le week-end.'
-    }
-
     const memeJour = (c) => c.formateur_id === formateurId && c.date === date && c.id !== excluId
     const total =
       creneaux.filter(memeJour).reduce((s, c) => s + dureeHeures(c.heure_debut, c.heure_fin), 0) +
@@ -613,6 +622,12 @@ export default function Planning() {
     return alertes
   }, [creneaux, formateurs])
 
+  const avertissementsWeekend = useMemo(() => {
+    return creneaux
+      .filter((c) => c.type === 'formation' && [0, 6].includes(new Date(c.date + 'T00:00:00').getDay()))
+      .map((c) => `${c.demande_lignes?.formations_catalogue?.nom || 'Formation'} placée le ${c.date} (week-end).`)
+  }, [creneaux])
+
   return (
     <div className="page page-large">
       <h1>Planning</h1>
@@ -696,6 +711,11 @@ export default function Planning() {
           {alertesLegales.length > 0 && (
             <ul className="message erreur">
               {alertesLegales.map((a, i) => <li key={i}>{a}</li>)}
+            </ul>
+          )}
+          {avertissementsWeekend.length > 0 && (
+            <ul className="message info">
+              {avertissementsWeekend.map((a, i) => <li key={i}>{a}</li>)}
             </ul>
           )}
 
