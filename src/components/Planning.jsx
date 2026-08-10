@@ -45,6 +45,23 @@ function parseDate(dateStr) {
   return new Date(dateStr + 'T00:00:00')
 }
 
+// Répartit des blocs qui se chevauchent dans le temps en couloirs (coloration d'intervalles).
+function assignerLanes(blocs) {
+  const tri = [...blocs].sort((a, b) => heureEnDecimal(a.heure_debut) - heureEnDecimal(b.heure_debut))
+  const finLanes = []
+  const laneDeBloc = {}
+  for (const bloc of tri) {
+    let lane = finLanes.findIndex((fin) => heureEnDecimal(bloc.heure_debut) >= fin)
+    if (lane === -1) {
+      lane = finLanes.length
+      finLanes.push(0)
+    }
+    finLanes[lane] = heureEnDecimal(bloc.heure_fin)
+    laneDeBloc[bloc.id] = lane
+  }
+  return { laneDeBloc, nbLanes: finLanes.length || 1 }
+}
+
 function formatJourLabel(date) {
   return date.toLocaleDateString('fr-FR', { weekday: 'short', day: '2-digit', month: '2-digit' })
 }
@@ -90,6 +107,8 @@ export default function Planning() {
     [baseDate],
   )
 
+  const LARGEUR_DEPLACEMENT = 16
+
   const disposition = useMemo(() => {
     const parJour = {}
     for (const c of creneaux) {
@@ -100,25 +119,30 @@ export default function Planning() {
     for (const [date, blocs] of Object.entries(parJour)) {
       const jourIndex = Math.round((parseDate(date).getTime() - baseDate.getTime()) / JOUR_MS)
       if (jourIndex < 0 || jourIndex >= DAYS_SHOWN) continue
-      const tri = [...blocs].sort((a, b) => heureEnDecimal(a.heure_debut) - heureEnDecimal(b.heure_debut))
-      const finLanes = []
-      const laneDeBloc = {}
-      for (const bloc of tri) {
-        let lane = finLanes.findIndex((fin) => heureEnDecimal(bloc.heure_debut) >= fin)
-        if (lane === -1) {
-          lane = finLanes.length
-          finLanes.push(0)
-        }
-        finLanes[lane] = heureEnDecimal(bloc.heure_fin)
-        laneDeBloc[bloc.id] = lane
-      }
-      const nbLanes = finLanes.length || 1
-      const largeurLane = DAY_WIDTH / nbLanes
-      for (const bloc of blocs) {
+      const xJour = LEFT_COL_WIDTH + jourIndex * DAY_WIDTH
+
+      // Les formations se partagent toute la largeur du jour entre elles, sans tenir compte des déplacements.
+      const formations = blocs.filter((b) => b.type === 'formation')
+      const { laneDeBloc: laneFormation, nbLanes: nbLanesFormation } = assignerLanes(formations)
+      const largeurFormation = DAY_WIDTH / nbLanesFormation
+      for (const bloc of formations) {
         positions[bloc.id] = {
-          x: LEFT_COL_WIDTH + jourIndex * DAY_WIDTH + laneDeBloc[bloc.id] * largeurLane,
+          x: xJour + laneFormation[bloc.id] * largeurFormation,
           y: HEADER_HEIGHT + (heureEnDecimal(bloc.heure_debut) - WINDOW_START) * HOUR_HEIGHT,
-          width: largeurLane - 3,
+          width: largeurFormation - 3,
+          height: dureeHeures(bloc.heure_debut, bloc.heure_fin) * HOUR_HEIGHT - 3,
+        }
+      }
+
+      // Les déplacements occupent une fine bande à droite de la colonne, indépendante des formations.
+      const deplacements = blocs.filter((b) => b.type === 'deplacement')
+      const { laneDeBloc: laneDepl, nbLanes: nbLanesDepl } = assignerLanes(deplacements)
+      const largeurDepl = LARGEUR_DEPLACEMENT / nbLanesDepl
+      for (const bloc of deplacements) {
+        positions[bloc.id] = {
+          x: xJour + DAY_WIDTH - LARGEUR_DEPLACEMENT + laneDepl[bloc.id] * largeurDepl,
+          y: HEADER_HEIGHT + (heureEnDecimal(bloc.heure_debut) - WINDOW_START) * HOUR_HEIGHT,
+          width: largeurDepl - 1,
           height: dureeHeures(bloc.heure_debut, bloc.heure_fin) * HOUR_HEIGHT - 3,
         }
       }
@@ -784,26 +808,31 @@ export default function Planning() {
                         {blocEnConfirmation === c.id ? '✓' : '×'}
                       </button>
                     )}
-                    <div className="planning-bloc-titre">
-                      {estFormation ? c.demande_lignes?.formations_catalogue?.nom : 'Déplacement (auto)'}
-                    </div>
-                    <div className="planning-bloc-heures">
-                      {c.heure_debut.slice(0, 5)}–
-                      {(redimensionnementEnCours?.id === c.id
-                        ? redimensionnementEnCours.heureFin
-                        : c.heure_fin
-                      ).slice(0, 5)}
-                    </div>
-                    {estFormation && (
-                      <select
-                        className="planning-bloc-select"
-                        value={c.formateur_id}
-                        onChange={(e) => changerFormateurBloc(c, e.target.value)}
-                      >
-                        {formateurs.map((f) => (
-                          <option key={f.id} value={f.id}>{f.nom}</option>
-                        ))}
-                      </select>
+                    {estFormation ? (
+                      <>
+                        <div className="planning-bloc-titre">{c.demande_lignes?.formations_catalogue?.nom}</div>
+                        <div className="planning-bloc-heures">
+                          {c.heure_debut.slice(0, 5)}–
+                          {(redimensionnementEnCours?.id === c.id
+                            ? redimensionnementEnCours.heureFin
+                            : c.heure_fin
+                          ).slice(0, 5)}
+                        </div>
+                        <select
+                          className="planning-bloc-select"
+                          value={c.formateur_id}
+                          onChange={(e) => changerFormateurBloc(c, e.target.value)}
+                        >
+                          {formateurs.map((f) => (
+                            <option key={f.id} value={f.id}>{f.nom}</option>
+                          ))}
+                        </select>
+                      </>
+                    ) : (
+                      <div
+                        className="planning-bloc-deplacement-zone"
+                        title={`Déplacement (auto) ${c.heure_debut.slice(0, 5)}–${c.heure_fin.slice(0, 5)}`}
+                      />
                     )}
                   </Rnd>
                 )
