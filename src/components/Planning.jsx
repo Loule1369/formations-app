@@ -308,36 +308,6 @@ export default function Planning() {
     await rafraichirDeplacements(scenarioId)
   }
 
-  // Règles bloquantes locales (pas de réseau, donc pas de flash visuel) : uniquement les règles
-  // légales (10h max/jour, 11h de repos), non négociables. Le week-end/lundi matin ne sont que des
-  // défauts à la génération automatique : le chef de projet reste libre de déplacer un bloc où il veut.
-  function violationLocale(formateurId, date, heureDebut, heureFin, excluId) {
-    const memeJour = (c) => c.formateur_id === formateurId && c.date === date && c.id !== excluId
-    const total =
-      creneaux.filter(memeJour).reduce((s, c) => s + dureeHeures(c.heure_debut, c.heure_fin), 0) +
-      dureeHeures(heureDebut, heureFin)
-    if (total > 10) {
-      return `Dépasse 10h de travail dans la journée pour ce formateur (${total.toFixed(1)}h).`
-    }
-
-    const veille = formatDate(new Date(new Date(date).getTime() - JOUR_MS))
-    const blocsVeille = creneaux.filter((c) => c.formateur_id === formateurId && c.date === veille && c.id !== excluId)
-    if (blocsVeille.length > 0) {
-      const finVeille = Math.max(...blocsVeille.map((c) => heureEnDecimal(c.heure_fin)))
-      const repos = 24 - finVeille + heureEnDecimal(heureDebut)
-      if (repos < 11) return `Repos insuffisant avec la veille (${repos.toFixed(1)}h, 11h minimum).`
-    }
-
-    const lendemain = formatDate(new Date(new Date(date).getTime() + JOUR_MS))
-    const blocsLendemain = creneaux.filter((c) => c.formateur_id === formateurId && c.date === lendemain && c.id !== excluId)
-    if (blocsLendemain.length > 0) {
-      const debutLendemain = Math.min(...blocsLendemain.map((c) => heureEnDecimal(c.heure_debut)))
-      const repos = 24 - heureEnDecimal(heureFin) + debutLendemain
-      if (repos < 11) return `Repos insuffisant avec le lendemain (${repos.toFixed(1)}h, 11h minimum).`
-    }
-    return null
-  }
-
   async function chargerScenario(id) {
     setScenarioId(id)
     setNomCopie('')
@@ -493,13 +463,6 @@ export default function Planning() {
 
     if (nouvelleDate === creneau.date && nouvelleHeureDebut === creneau.heure_debut) return
 
-    const violation = violationLocale(creneau.formateur_id, nouvelleDate, nouvelleHeureDebut, nouvelleHeureFin, creneau.id)
-    if (violation) {
-      setMessage(violation)
-      setCreneaux((prev) => [...prev])
-      return
-    }
-
     setMessage('')
     setCreneaux((prev) =>
       prev.map((c) =>
@@ -539,13 +502,6 @@ export default function Planning() {
 
     if (nouvelleHeureFin === creneau.heure_fin) return
 
-    const violation = violationLocale(creneau.formateur_id, creneau.date, creneau.heure_debut, nouvelleHeureFin, creneau.id)
-    if (violation) {
-      setMessage(violation)
-      setCreneaux((prev) => [...prev])
-      return
-    }
-
     setMessage('')
     setCreneaux((prev) => prev.map((c) => (c.id === creneau.id ? { ...c, heure_fin: nouvelleHeureFin } : c)))
 
@@ -567,12 +523,6 @@ export default function Planning() {
   }
 
   async function changerFormateurBloc(creneau, nouveauFormateurId) {
-    const violation = violationLocale(nouveauFormateurId, creneau.date, creneau.heure_debut, creneau.heure_fin, creneau.id)
-    if (violation) {
-      setMessage(violation)
-      return
-    }
-
     setMessage('')
     setCreneaux((prev) => prev.map((c) => (c.id === creneau.id ? { ...c, formateur_id: nouveauFormateurId } : c)))
 
