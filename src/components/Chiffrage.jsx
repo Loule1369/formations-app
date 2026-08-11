@@ -11,18 +11,9 @@ const TARIF_REPAS_PR = 25
 const TARIF_HORAIRE_PV = 150
 const TARIF_HORAIRE_PR_PAR_SERVICE = { FORDOC: 79.68, SAV: 84.52, DIH: 68.65, INSTALL: 81.01 }
 const TARIF_HORAIRE_PR_DEFAUT = 79.68
-const JOUR_H = 7 // longueur conventionnelle d'une journée pour convertir des heures en "jours"
 const TARIF_JOUR_ANIMATION_PV = 1200
 const TARIF_JOUR_PREP_PV = 920
 const TARIF_JOUR_PV_PR = 637.44 // même coût de revient journalier, que ce soit animation ou préparation
-
-const STATUT_LABELS = {
-  besoin_exprime: 'Besoin exprimé',
-  devis_envoye: 'Devis envoyé',
-  valide: 'Validé',
-  saisi_queoval: 'Saisi QUEOVAL',
-  termine: 'Terminé',
-}
 
 const CATEGORIES = ['formation', 'administratif', 'elearning', 'ascentline', 'deplacement', 'autre']
 const CATEGORIE_LABELS = {
@@ -102,7 +93,7 @@ export default function Chiffrage() {
       setResume(null)
       return
     }
-    chargerResume(scenarioId)
+    chargerResume()
   }, [scenarioId])
 
   // Dès qu'un scénario est sélectionné et qu'aucune ligne n'existe encore, on génère le devis
@@ -132,28 +123,17 @@ export default function Chiffrage() {
     setLignes(data || [])
   }
 
-  async function chargerResume(scenarioIdCible) {
-    const [demandeRes, creneauxRes] = await Promise.all([
-      supabase
-        .from('demandes')
-        .select('statut, date_creation, notes, remise_pv, remise_pr, arrondi_pv, arrondi_pr')
-        .eq('id', demandeId)
-        .single(),
-      supabase.from('creneaux').select('date, formateur_id').eq('scenario_id', scenarioIdCible).eq('type', 'formation'),
-    ])
-    const dates = (creneauxRes.data || []).map((c) => c.date).sort()
-    const formateurIds = [...new Set((creneauxRes.data || []).map((c) => c.formateur_id))]
+  async function chargerResume() {
+    const { data } = await supabase
+      .from('demandes')
+      .select('remise_pv, remise_pr, arrondi_pv, arrondi_pr')
+      .eq('id', demandeId)
+      .single()
     setResume({
-      statut: demandeRes.data?.statut,
-      dateCreation: demandeRes.data?.date_creation,
-      notes: demandeRes.data?.notes,
-      remisePv: demandeRes.data?.remise_pv || 0,
-      remisePr: demandeRes.data?.remise_pr || 0,
-      arrondiPv: demandeRes.data?.arrondi_pv || 0,
-      arrondiPr: demandeRes.data?.arrondi_pr || 0,
-      formateurNoms: formateurIds.map((id) => formateurs.find((f) => f.id === id)?.nom || id),
-      dateDebut: dates[0],
-      dateFin: dates[dates.length - 1],
+      remisePv: data?.remise_pv || 0,
+      remisePr: data?.remise_pr || 0,
+      arrondiPv: data?.arrondi_pv || 0,
+      arrondiPr: data?.arrondi_pr || 0,
     })
   }
 
@@ -173,7 +153,7 @@ export default function Chiffrage() {
       const { data: creneaux } = await supabase
         .from('creneaux')
         .select(
-          'type, date, heure_debut, heure_fin, formateur_id, demande_ligne_id, demande_lignes(formation_id, groupe, formations_catalogue(nom, duree_h, duree_prep_h))',
+          'type, date, heure_debut, heure_fin, formateur_id, demande_ligne_id, demande_lignes(formation_id, groupe, formations_catalogue(nom, jours_animation_catalogue, jours_preparation_catalogue))',
         )
         .eq('scenario_id', scenarioId)
 
@@ -198,8 +178,10 @@ export default function Chiffrage() {
       const lignesFormations = []
       for (const { catalogue: cat, nbGroupes } of Object.values(parFormationId)) {
         if (!cat) continue
-        const joursPrep = arrondi2((cat.duree_prep_h || 0) / JOUR_H)
-        const joursAnimTotal = arrondi2(((cat.duree_h || 0) / JOUR_H) * nbGroupes)
+        // Jours issus directement des colonnes K (Nb jours animation) / L (Nb jours prep) du fichier
+        // Excel de référence — pas recalculés depuis les heures, pour coller exactement à l'original.
+        const joursPrep = cat.jours_preparation_catalogue || 0
+        const joursAnimTotal = arrondi2((cat.jours_animation_catalogue || 0) * nbGroupes)
         const joursTotal = arrondi2(joursPrep + joursAnimTotal)
         lignesFormations.push({
           demande_id: demandeId,
@@ -441,13 +423,13 @@ export default function Chiffrage() {
   const tAutre = totaux(lignes.filter((l) => l.categorie === 'autre'))
 
   const lignesRecap = [
-    { libelle: 'FORMATION (animation)', pv: animPv, pr: animPr },
-    { libelle: 'FORMATION (préparation & évaluation)', pv: prepPv, pr: prepPr },
-    { libelle: 'ADMINISTRATIF', pv: tAdmin.pv, pr: tAdmin.pr },
-    { libelle: 'MODULES E-LEARNING', pv: tElearning.pv, pr: tElearning.pr },
-    { libelle: 'LICENCES ASCENTLINE', pv: tAscentline.pv, pr: tAscentline.pr },
-    { libelle: 'FRAIS DE DEPLACEMENTS', pv: tDeplacement.pv, pr: tDeplacement.pr },
-    { libelle: 'FRAIS DIVERS', pv: tAutre.pv, pr: tAutre.pr },
+    { libelle: 'Formation (animation)', pv: animPv, pr: animPr },
+    { libelle: 'Formation (préparation & évaluation)', pv: prepPv, pr: prepPr },
+    { libelle: 'Administratif', pv: tAdmin.pv, pr: tAdmin.pr },
+    { libelle: 'Modules e-learning', pv: tElearning.pv, pr: tElearning.pr },
+    { libelle: 'Licences Ascentline', pv: tAscentline.pv, pr: tAscentline.pr },
+    { libelle: 'Frais de déplacement', pv: tDeplacement.pv, pr: tDeplacement.pr },
+    { libelle: 'Frais divers', pv: tAutre.pv, pr: tAutre.pr },
   ]
   const sousTotalPv = lignesRecap.reduce((s, l) => s + l.pv, 0)
   const sousTotalPr = lignesRecap.reduce((s, l) => s + l.pr, 0)
@@ -734,31 +716,6 @@ export default function Chiffrage() {
 
       <section className="section-devis">
         <h2>Récapitulatif du projet</h2>
-        <p className="astuce">
-          Prêt à transmettre à l'administration des ventes et à reprendre dans l'outil de gestion de projet.
-        </p>
-
-        <div className="table-devis-scroll">
-          <table className="table-devis table-recap-info">
-            <tbody>
-              <tr><th>Client</th><td>{clientNom}</td></tr>
-              {resume && (
-                <>
-                  <tr><th>Statut de la demande</th><td>{STATUT_LABELS[resume.statut] || resume.statut}</td></tr>
-                  <tr><th>Demande créée le</th><td>{resume.dateCreation}</td></tr>
-                  {resume.notes && <tr><th>Notes</th><td>{resume.notes}</td></tr>}
-                  {resume.dateDebut && (
-                    <tr><th>Période de formation</th><td>du {resume.dateDebut} au {resume.dateFin}</td></tr>
-                  )}
-                  <tr>
-                    <th>Formateur(s)</th>
-                    <td>{resume.formateurNoms.length > 0 ? resume.formateurNoms.join(', ') : '—'}</td>
-                  </tr>
-                </>
-              )}
-            </tbody>
-          </table>
-        </div>
 
         <div className="table-devis-scroll">
           <table className="table-devis table-recap-financier">
@@ -780,13 +737,13 @@ export default function Chiffrage() {
                 </tr>
               ))}
               <tr className="ligne-forte">
-                <td><strong>SOUS-TOTAL</strong></td>
+                <td><strong>Sous-total</strong></td>
                 <td><strong>{sousTotalPv.toFixed(2)} €</strong></td>
                 <td><strong>{sousTotalPr.toFixed(2)} €</strong></td>
                 <td><strong>{margeTaux(sousTotalPv, sousTotalPr).toFixed(0)}%</strong></td>
               </tr>
               <tr>
-                <td>REMISE</td>
+                <td>Remise</td>
                 <td>
                   <input
                     type="number"
@@ -808,13 +765,13 @@ export default function Chiffrage() {
                 <td></td>
               </tr>
               <tr className="ligne-forte">
-                <td><strong>TOTAL</strong></td>
+                <td><strong>Total</strong></td>
                 <td><strong>{totalPv.toFixed(2)} €</strong></td>
                 <td><strong>{totalPr.toFixed(2)} €</strong></td>
                 <td><strong>{margeTaux(totalPv, totalPr).toFixed(0)}%</strong></td>
               </tr>
               <tr>
-                <td>ARRONDI</td>
+                <td>Arrondi</td>
                 <td>
                   <input
                     type="number"

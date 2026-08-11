@@ -251,9 +251,10 @@ export default function Planning() {
   }
 
   // Nombre de jours nécessaires pour une formation de "dureeTotale" heures démarrant à "jourDepart",
-  // en tenant compte du plafond réduit du lundi (arrivée le matin, formation l'après-midi seulement).
-  function calculerJoursNecessaires(jourDepart, dureeTotale) {
-    if (jourDepart.getDay() === 1) {
+  // en tenant compte du plafond réduit d'un 1er jour qui démarre l'après-midi (lundi = arrivée le
+  // matin, ou enchaînement direct sur l'après-midi d'un jour déjà bien entamé par une autre formation).
+  function calculerJoursNecessaires(dureeTotale, premierJourApresMidi) {
+    if (premierJourApresMidi) {
       const reste = Math.max(0, dureeTotale - MAX_DUREE_DEMARRAGE_APRES_MIDI)
       return 1 + Math.ceil(reste / MAX_DUREE_JOUR)
     }
@@ -263,13 +264,13 @@ export default function Planning() {
   // Répartit la durée totale sur les jours de façon équilibrée : chaque jour reçoit une part
   // proportionnelle du temps qui reste à répartir, plutôt que de remplir chaque jour au maximum et de
   // laisser un petit reliquat de 1-2h en fin de formation.
-  function repartirDureeParJour(jourDepart, dureeTotale, n) {
+  function repartirDureeParJour(jourDepart, dureeTotale, n, premierJourApresMidi) {
     const jours = []
     let d = new Date(jourDepart)
     let dureeRestante = dureeTotale
     for (let i = 0; i < n; i++) {
       let dureeJour
-      if (d.getDay() === 1) {
+      if (i === 0 && premierJourApresMidi) {
         dureeJour = Math.min(dureeRestante, MAX_DUREE_DEMARRAGE_APRES_MIDI)
       } else {
         const joursRestants = n - i
@@ -282,35 +283,81 @@ export default function Planning() {
     return jours
   }
 
-  // Génère le planning par défaut : une formation démarre toujours un jour frais (jamais partagée
-  // avec une autre formation), reste groupée sur des jours consécutifs sans traverser un week-end
-  // (repoussée au lundi suivant si besoin), et répartit ses heures équitablement pour éviter les
-  // petits blocs isolés de 1-2h — plus réaliste que l'optimisation pure : les équipes formées suivent
-  // en général un planning posté, on n'enchaîne pas des groupes différents sur une même demi-journée.
+  // Heure de démarrage d'un jour "normal" (ni lundi, ni enchaînement forcé l'après-midi) : un bloc
+  // court qui tient dans la matinée (≤ 4h) se cale contre la pause déjeuner pour finir à 12h pile —
+  // un point d'arrêt net — plutôt que de démarrer dès 8h et laisser l'après-midi mort.
+  function heureDebutPourJour(duree) {
+    if (duree <= PAUSE_DEJEUNER_DEBUT - HEURE_DEBUT_JOUR) {
+      return PAUSE_DEJEUNER_DEBUT - duree
+    }
+    return HEURE_DEBUT_JOUR
+  }
+
+  // Génère le planning par défaut : chaque formation reste groupée sur des jours consécutifs sans
+  // traverser un week-end (repoussée au lundi suivant si besoin) et répartit ses heures équitablement
+  // pour éviter les petits blocs isolés de 1-2h — les équipes formées suivent en général un planning
+  // posté, on n'enchaîne donc jamais 2 groupes d'une même formation sur une même demi-journée. En
+  // revanche, si la matinée d'un jour est déjà prise par la FIN d'une autre formation (même mission),
+  // la formation suivante peut démarrer l'après-midi de ce même jour plutôt que de perdre du temps.
   async function genererPlanningParDefaut(demandeIdCible, scenarioIdCible, lignesData) {
     if (!lignesData || lignesData.length === 0 || formateurs.length === 0) return
     let jourCourant = null
+    let finJourCourant = null
+    let formationIdCourant = null
     const blocs = []
 
     for (const ligne of lignesData) {
       const formateur = trouverFormateurPourCode(ligne.formations_catalogue?.code)
       const dureeTotale = ligne.formations_catalogue?.duree_h || 4
 
-      let jourDepart =
-        jourCourant === null ? prochainLundi(new Date(new Date().toDateString())) : jourOuvreSuivant(jourCourant)
+      let jourDepart
+      let heureDebutForcee = null
+      if (jourCourant === null) {
+        jourDepart = prochainLundi(new Date(new Date().toDateString()))
+      } else if (
+        ligne.formation_id !== formationIdCourant &&
+        finJourCourant !== null &&
+        finJourCourant <= PAUSE_DEJEUNER_DEBUT
+      ) {
+        jourDepart = jourCourant
+        heureDebutForcee = PAUSE_DEJEUNER_FIN
+      } else {
+        jourDepart = jourOuvreSuivant(jourCourant)
+      }
+      let premierJourApresMidi = jourDepart.getDay() === 1 || heureDebutForcee !== null
 
-      let n = calculerJoursNecessaires(jourDepart, dureeTotale)
-      if (jourDepart.getDay() + (n - 1) > 5) {
+      // Si la formation tient dans une journée normale (≤ MAX_DUREE_JOUR) mais que la capacité réduite
+      // du 1er jour (lundi réservé à l'arrivée) est trop courte pour l'accueillir en entier, mieux vaut
+      // décaler tout le bloc au lendemain que de le couper en 2 jours avec un petit reliquat.
+      if (
+        heureDebutForcee === null &&
+        jourDepart.getDay() === 1 &&
+        dureeTotale > MAX_DUREE_DEMARRAGE_APRES_MIDI &&
+        dureeTotale <= MAX_DUREE_JOUR
+      ) {
+        jourDepart = jourOuvreSuivant(jourDepart)
+        premierJourApresMidi = false
+      }
+
+      let n = calculerJoursNecessaires(dureeTotale, premierJourApresMidi)
+      if (heureDebutForcee === null && jourDepart.getDay() + (n - 1) > 5) {
         // Traverserait le week-end : on préfère démarrer la semaine suivante plutôt que de couper
         // la formation par deux jours de coupure.
         jourDepart = prochainLundi(jourDepart)
-        n = calculerJoursNecessaires(jourDepart, dureeTotale)
+        premierJourApresMidi = true
+        n = calculerJoursNecessaires(dureeTotale, premierJourApresMidi)
       }
 
-      const jours = repartirDureeParJour(jourDepart, dureeTotale, n)
-      for (const { date, duree } of jours) {
-        const heureDebutJour = date.getDay() === 1 ? HEURE_DEBUT_LUNDI : HEURE_DEBUT_JOUR
-        for (const segment of decouperAvecPauseDejeuner(heureDebutJour, duree)) {
+      const jours = repartirDureeParJour(jourDepart, dureeTotale, n, premierJourApresMidi)
+      jours.forEach(({ date, duree }, index) => {
+        const heureDebutJour =
+          index === 0 && heureDebutForcee !== null
+            ? heureDebutForcee
+            : date.getDay() === 1
+              ? HEURE_DEBUT_LUNDI
+              : heureDebutPourJour(duree)
+        const segments = decouperAvecPauseDejeuner(heureDebutJour, duree)
+        for (const segment of segments) {
           blocs.push({
             demande_id: demandeIdCible,
             demande_ligne_id: ligne.id,
@@ -322,8 +369,12 @@ export default function Planning() {
             heure_fin: decimalEnHeure(segment.heure_fin),
           })
         }
-      }
+        if (index === jours.length - 1) {
+          finJourCourant = segments[segments.length - 1].heure_fin
+        }
+      })
       jourCourant = jours[jours.length - 1].date
+      formationIdCourant = ligne.formation_id
     }
 
     await supabase.from('creneaux').insert(blocs)
@@ -540,6 +591,10 @@ export default function Planning() {
 
   async function supprimerBloc(id) {
     if (blocSelectionneId === id) setBlocSelectionneId('')
+    // Retire le bloc de l'état local tout de suite : sans ça, seuls les blocs "Déplacement" sont
+    // rafraîchis par finaliserMutation, et le bloc supprimé (une formation) restait affiché à l'écran
+    // bien qu'il soit déjà effacé en base — donnant l'impression que la suppression ne fonctionnait pas.
+    setCreneaux((prev) => prev.filter((c) => c.id !== id))
     await supabase.from('creneaux').delete().eq('id', id)
     await finaliserMutation()
   }

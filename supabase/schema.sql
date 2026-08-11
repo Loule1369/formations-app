@@ -36,6 +36,8 @@ create table formations_catalogue (
   nom text not null,
   duree_h numeric not null,
   duree_prep_h numeric,
+  jours_animation_catalogue numeric,
+  jours_preparation_catalogue numeric,
   prerequis text,
   prix numeric,
   prix_revient numeric,
