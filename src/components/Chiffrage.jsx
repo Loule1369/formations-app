@@ -96,7 +96,6 @@ export default function Chiffrage() {
         .eq('scenario_id', scenarioId)
 
       const formations = (creneaux || []).filter((c) => c.type === 'formation')
-      const deplacements = (creneaux || []).filter((c) => c.type === 'deplacement')
 
       // Une ligne par formation demandée (regroupe les blocs matin/après-midi/plusieurs jours).
       const parLigne = {}
@@ -116,16 +115,21 @@ export default function Chiffrage() {
           categorie: 'formation',
         }))
 
-      // Nuits d'hôtel et repas déduits des missions, ventilés par service du formateur (FORDOC, SAV, DIH...).
-      const parFormateur = {}
-      for (const c of deplacements) {
-        if (!parFormateur[c.formateur_id]) parFormateur[c.formateur_id] = []
-        parFormateur[c.formateur_id].push(c.date)
+      // Nuits d'hôtel et repas déduits des JOURS DE FORMATION réels (pas des dates des blocs
+      // "Déplacement", qui ne sont que les 2 bornes arrivée/départ et cassent le calcul sur
+      // plusieurs semaines) — même logique de regroupement en missions que dans le Planning.
+      const joursParFormateur = {}
+      for (const c of formations) {
+        if (!joursParFormateur[c.formateur_id]) joursParFormateur[c.formateur_id] = new Set()
+        joursParFormateur[c.formateur_id].add(c.date)
       }
+
       const nuitsParService = {}
-      for (const [formateurId, dates] of Object.entries(parFormateur)) {
+      const joursParService = {}
+      for (const [formateurId, joursSet] of Object.entries(joursParFormateur)) {
         const service = serviceDuFormateur(formateurId)
-        const tri = [...new Set(dates)].sort()
+        const tri = [...joursSet].sort()
+        joursParService[service] = (joursParService[service] || 0) + tri.length
         for (const voyage of grouperVoyages(tri)) {
           const nuits = Math.round(
             (new Date(voyage.fin + 'T00:00:00').getTime() - new Date(voyage.debut + 'T00:00:00').getTime()) /
@@ -135,47 +139,34 @@ export default function Chiffrage() {
         }
       }
 
-      const joursParService = {}
-      for (const c of formations) {
-        const service = serviceDuFormateur(c.formateur_id)
-        const cle = `${service}|${c.formateur_id}|${c.date}`
-        joursParService[service] = joursParService[service] || new Set()
-        joursParService[service].add(cle)
-      }
-
       const lignesFrais = []
-      for (const [service, nuits] of Object.entries(nuitsParService)) {
-        if (nuits <= 0) continue
-        lignesFrais.push({
-          demande_id: demandeId,
-          libelle: `Nuits d'hôtel — ${service}`,
-          quantite: nuits,
-          prix_unitaire: TARIF_NUIT_HOTEL_PV,
-          prix_revient: TARIF_NUIT_HOTEL_PR,
-          origine: 'planning',
-          categorie: 'deplacement',
-        })
-        lignesFrais.push({
-          demande_id: demandeId,
-          libelle: `Repas soir — ${service}`,
-          quantite: nuits,
-          prix_unitaire: TARIF_REPAS_PV,
-          prix_revient: TARIF_REPAS_PR,
-          origine: 'planning',
-          categorie: 'deplacement',
-        })
-      }
-      for (const [service, joursSet] of Object.entries(joursParService)) {
-        if (joursSet.size === 0) continue
-        lignesFrais.push({
-          demande_id: demandeId,
-          libelle: `Repas midi — ${service}`,
-          quantite: joursSet.size,
-          prix_unitaire: TARIF_REPAS_PV,
-          prix_revient: TARIF_REPAS_PR,
-          origine: 'planning',
-          categorie: 'deplacement',
-        })
+      const tousServices = new Set([...Object.keys(nuitsParService), ...Object.keys(joursParService)])
+      for (const service of tousServices) {
+        const nuits = nuitsParService[service] || 0
+        const jours = joursParService[service] || 0
+        if (nuits > 0) {
+          lignesFrais.push({
+            demande_id: demandeId,
+            libelle: `Nuits d'hôtel — ${service}`,
+            quantite: nuits,
+            prix_unitaire: TARIF_NUIT_HOTEL_PV,
+            prix_revient: TARIF_NUIT_HOTEL_PR,
+            origine: 'planning',
+            categorie: 'deplacement',
+          })
+        }
+        const totalRepas = nuits + jours
+        if (totalRepas > 0) {
+          lignesFrais.push({
+            demande_id: demandeId,
+            libelle: `Repas — ${service}`,
+            quantite: totalRepas,
+            prix_unitaire: TARIF_REPAS_PV,
+            prix_revient: TARIF_REPAS_PR,
+            origine: 'planning',
+            categorie: 'deplacement',
+          })
+        }
       }
 
       await supabase.from('devis_lignes').delete().eq('demande_id', demandeId).eq('origine', 'planning')
