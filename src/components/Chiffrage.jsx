@@ -180,8 +180,11 @@ export default function Chiffrage() {
         if (!cat) continue
         // Jours issus directement des colonnes K (Nb jours animation) / L (Nb jours prep) du fichier
         // Excel de référence — pas recalculés depuis les heures, pour coller exactement à l'original.
+        // "Jours animation" reste la valeur POUR UNE SEULE formation (pas multipliée par le nombre de
+        // groupes) : c'est le total (jours prépa + animation × nb groupes) qui rend le calcul visible.
         const joursPrep = cat.jours_preparation_catalogue || 0
-        const joursAnimTotal = arrondi2((cat.jours_animation_catalogue || 0) * nbGroupes)
+        const joursAnimUnitaire = cat.jours_animation_catalogue || 0
+        const joursAnimTotal = arrondi2(joursAnimUnitaire * nbGroupes)
         const joursTotal = arrondi2(joursPrep + joursAnimTotal)
         lignesFormations.push({
           demande_id: demandeId,
@@ -189,7 +192,7 @@ export default function Chiffrage() {
           quantite: 1,
           jours_preparation: joursPrep,
           nb_groupes: nbGroupes,
-          jours_animation_unitaire: joursAnimTotal,
+          jours_animation_unitaire: joursAnimUnitaire,
           prix_unitaire: arrondi2(joursPrep * TARIF_JOUR_PREP_PV + joursAnimTotal * TARIF_JOUR_ANIMATION_PV),
           prix_revient: arrondi2(joursTotal * TARIF_JOUR_PV_PR),
           origine: 'planning',
@@ -345,18 +348,23 @@ export default function Chiffrage() {
     await persisterLigne(ligne)
   }
 
-  // Pour les lignes "Formations" : jours de préparation et jours d'animation pilotent directement le
-  // PV et le PR (comme des formules dans le fichier Excel de référence) — recalculés à chaque saisie.
+  // Pour les lignes "Formations" : jours de préparation, jours d'animation (pour 1 seule formation)
+  // et nombre de groupes pilotent directement le PV et le PR (comme des formules dans le fichier
+  // Excel de référence) — recalculés à chaque saisie. "Jours animation" n'est PAS multiplié par le
+  // nombre de groupes dans son propre champ : c'est le total (jours_prep + animation × nb_groupes)
+  // qui porte la multiplication, pour que le calcul reste visible.
   function sauvegarderChampFormation(id) {
     setLignes((prev) =>
       prev.map((l) => {
         if (l.id !== id) return l
         const joursPrep = Number(l.jours_preparation) || 0
         const joursAnim = Number(l.jours_animation_unitaire) || 0
-        const joursTotal = joursPrep + joursAnim
+        const nbGroupes = Number(l.nb_groupes) || 0
+        const joursAnimTotal = joursAnim * nbGroupes
+        const joursTotal = joursPrep + joursAnimTotal
         const ligneMaj = {
           ...l,
-          prix_unitaire: arrondi2(joursPrep * TARIF_JOUR_PREP_PV + joursAnim * TARIF_JOUR_ANIMATION_PV),
+          prix_unitaire: arrondi2(joursPrep * TARIF_JOUR_PREP_PV + joursAnimTotal * TARIF_JOUR_ANIMATION_PV),
           prix_revient: arrondi2(joursTotal * TARIF_JOUR_PV_PR),
         }
         persisterLigne(ligneMaj)
@@ -410,7 +418,7 @@ export default function Chiffrage() {
   let prepPr = 0
   for (const l of lignesFormationsCat) {
     const joursPrep = Number(l.jours_preparation) || 0
-    const joursAnim = Number(l.jours_animation_unitaire) || 0
+    const joursAnim = (Number(l.jours_animation_unitaire) || 0) * (Number(l.nb_groupes) || 0)
     animPv += joursAnim * TARIF_JOUR_ANIMATION_PV
     animPr += joursAnim * TARIF_JOUR_PV_PR
     prepPv += joursPrep * TARIF_JOUR_PREP_PV
@@ -500,7 +508,8 @@ export default function Chiffrage() {
                       {lignesCat.map((l) => {
                         const joursPrep = Number(l.jours_preparation) || 0
                         const joursAnim = Number(l.jours_animation_unitaire) || 0
-                        const joursTotal = arrondi2(joursPrep + joursAnim)
+                        const nbGroupes = Number(l.nb_groupes) || 0
+                        const joursTotal = arrondi2(joursPrep + joursAnim * nbGroupes)
                         const pv = Number(l.prix_unitaire) || 0
                         const pr = Number(l.prix_revient) || 0
                         return (
@@ -530,7 +539,7 @@ export default function Chiffrage() {
                                 min="1"
                                 value={l.nb_groupes ?? 1}
                                 onChange={(e) => modifierLigneLocal(l.id, 'nb_groupes', e.target.value)}
-                                onBlur={() => sauvegarderLigne(l.id)}
+                                onBlur={() => sauvegarderChampFormation(l.id)}
                               />
                             </td>
                             <td>

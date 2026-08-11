@@ -261,21 +261,18 @@ export default function Planning() {
     return Math.max(1, Math.ceil(dureeTotale / MAX_DUREE_JOUR))
   }
 
-  // Répartit la durée totale sur les jours de façon équilibrée : chaque jour reçoit une part
-  // proportionnelle du temps qui reste à répartir, plutôt que de remplir chaque jour au maximum et de
-  // laisser un petit reliquat de 1-2h en fin de formation.
+  // Répartit la durée totale en remplissant chaque jour au maximum (plutôt qu'en la divisant à parts
+  // égales) : le reliquat atterrit entièrement sur le DERNIER jour, en un seul bloc. Combiné à
+  // heureDebutPourJour (qui cale un reliquat court contre la pause déjeuner), ça évite d'éparpiller
+  // une formation en petits bouts d'après-midi sur plusieurs jours différents — un seul jour "plus
+  // léger" à la fin plutôt que plusieurs journées coupées de la même façon.
   function repartirDureeParJour(jourDepart, dureeTotale, n, premierJourApresMidi) {
     const jours = []
     let d = new Date(jourDepart)
     let dureeRestante = dureeTotale
     for (let i = 0; i < n; i++) {
-      let dureeJour
-      if (i === 0 && premierJourApresMidi) {
-        dureeJour = Math.min(dureeRestante, MAX_DUREE_DEMARRAGE_APRES_MIDI)
-      } else {
-        const joursRestants = n - i
-        dureeJour = Math.min(Math.round((dureeRestante / joursRestants) * 2) / 2, MAX_DUREE_JOUR)
-      }
+      const plafond = i === 0 && premierJourApresMidi ? MAX_DUREE_DEMARRAGE_APRES_MIDI : MAX_DUREE_JOUR
+      const dureeJour = Math.min(dureeRestante, plafond)
       jours.push({ date: new Date(d), duree: dureeJour })
       dureeRestante -= dureeJour
       if (i < n - 1) d = jourOuvreSuivant(d)
@@ -294,11 +291,12 @@ export default function Planning() {
   }
 
   // Génère le planning par défaut : chaque formation reste groupée sur des jours consécutifs sans
-  // traverser un week-end (repoussée au lundi suivant si besoin) et répartit ses heures équitablement
-  // pour éviter les petits blocs isolés de 1-2h — les équipes formées suivent en général un planning
-  // posté, on n'enchaîne donc jamais 2 groupes d'une même formation sur une même demi-journée. En
-  // revanche, si la matinée d'un jour est déjà prise par la FIN d'une autre formation (même mission),
-  // la formation suivante peut démarrer l'après-midi de ce même jour plutôt que de perdre du temps.
+  // traverser un week-end (repoussée au lundi suivant si besoin) et remplit chaque jour au maximum
+  // (le reliquat, s'il y en a un, forme un seul bloc net sur le dernier jour) — les équipes formées
+  // suivent en général un planning posté, on n'enchaîne donc jamais 2 groupes d'une même formation sur
+  // une même demi-journée. En revanche, si la matinée d'un jour est déjà prise par la FIN d'une autre
+  // formation (même mission), la formation suivante peut démarrer l'après-midi de ce même jour plutôt
+  // que de perdre du temps.
   async function genererPlanningParDefaut(demandeIdCible, scenarioIdCible, lignesData) {
     if (!lignesData || lignesData.length === 0 || formateurs.length === 0) return
     let jourCourant = null
