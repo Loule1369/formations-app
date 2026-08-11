@@ -56,7 +56,10 @@ export default function Planning() {
   const [confirmerSuppressionScenario, setConfirmerSuppressionScenario] = useState(false)
   const [confirmerRegeneration, setConfirmerRegeneration] = useState(false)
   const [redimensionnementEnCours, setRedimensionnementEnCours] = useState(null)
-  const [glissementEnCours, setGlissementEnCours] = useState(null)
+  // Incrémenté après chaque glisser/redimensionnement terminé, pour forcer un remontage du bloc
+  // une fois la position définitive connue (acceptée ou refusée) — le geste lui-même reste géré
+  // entièrement par la bibliothèque, sans aucun re-rendu React pendant le mouvement.
+  const [nonceRepositionnement, setNonceRepositionnement] = useState(0)
 
   function heureFinDurantRedimensionnement(creneau, hauteurPx) {
     const duree = Math.max(0.5, Math.round((hauteurPx / HOUR_HEIGHT) * 2) / 2)
@@ -900,29 +903,24 @@ export default function Planning() {
                 const couleur = estFormation ? formationCouleur(c.demande_lignes?.formations_catalogue?.code) : '#888'
                 return (
                   <Rnd
-                    key={c.id}
-                    size={{ width: pos.width, height: pos.height }}
-                    position={
-                      glissementEnCours?.id === c.id
-                        ? { x: glissementEnCours.x, y: glissementEnCours.y }
-                        : { x: pos.x, y: pos.y }
-                    }
+                    key={`${c.id}:${nonceRepositionnement}`}
+                    default={{ x: pos.x, y: pos.y, width: pos.width, height: pos.height }}
                     minHeight={HOUR_HEIGHT / 2}
                     bounds="parent"
                     disableDragging={!estFormation}
                     enableResizing={estFormation ? { bottom: true, top: false, left: false, right: false } : false}
                     cancel=".planning-bloc-select, .planning-bloc-supprimer"
-                    onDrag={(e, d) => setGlissementEnCours({ id: c.id, x: d.x, y: d.y })}
-                    onDragStop={(e, d) => {
-                      setGlissementEnCours(null)
-                      deplacerBloc(c, d.x, d.y)
+                    onDragStop={async (e, d) => {
+                      await deplacerBloc(c, d.x, d.y)
+                      setNonceRepositionnement((n) => n + 1)
                     }}
                     onResize={(e, dir, ref) =>
                       setRedimensionnementEnCours({ id: c.id, heureFin: heureFinDurantRedimensionnement(c, ref.offsetHeight) })
                     }
-                    onResizeStop={(e, dir, ref) => {
+                    onResizeStop={async (e, dir, ref) => {
                       setRedimensionnementEnCours(null)
-                      redimensionnerBloc(c, ref.offsetHeight)
+                      await redimensionnerBloc(c, ref.offsetHeight)
+                      setNonceRepositionnement((n) => n + 1)
                     }}
                     className={`planning-bloc ${c.type}`}
                     style={estFormation ? { background: couleur } : { borderColor: couleur }}
