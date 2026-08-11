@@ -48,7 +48,6 @@ export default function Planning() {
 
   const [message, setMessage] = useState('')
   const [succes, setSucces] = useState('')
-  const [blocEnConfirmation, setBlocEnConfirmation] = useState('')
   const [confirmerSuppressionScenario, setConfirmerSuppressionScenario] = useState(false)
   const [confirmerRegeneration, setConfirmerRegeneration] = useState(false)
   const [redimensionnementEnCours, setRedimensionnementEnCours] = useState(null)
@@ -136,12 +135,19 @@ export default function Planning() {
       .then(({ data }) => data && setFormateurs(data))
   }, [])
 
-  // Copier/coller au clavier : un clic simple (sans glisser) sélectionne un bloc, Ctrl+C le copie,
-  // Ctrl+V le colle (dupliqué le lendemain, à glisser ensuite où besoin).
+  // Un clic simple (sans glisser) sélectionne un bloc : Ctrl+C le copie, Ctrl+V le colle
+  // (dupliqué le lendemain, à glisser ensuite où besoin), Suppr/Retour arrière le supprime.
   useEffect(() => {
     function surTouche(e) {
       const balise = document.activeElement?.tagName
       if (balise === 'INPUT' || balise === 'SELECT' || balise === 'TEXTAREA') return
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (blocSelectionneId) {
+          e.preventDefault()
+          supprimerBloc(blocSelectionneId)
+        }
+        return
+      }
       if (!(e.ctrlKey || e.metaKey)) return
       const touche = e.key.toLowerCase()
       if (touche === 'c') {
@@ -230,8 +236,6 @@ export default function Planning() {
   const MAX_DUREE_DEMARRAGE_APRES_MIDI = 3 // un 1er jour qui démarre l'après-midi (ex. lundi) reste court, le reste bascule le lendemain matin
   const PAUSE_DEJEUNER_DEBUT = 12
   const PAUSE_DEJEUNER_FIN = 13.5
-  const DUREE_MIN_MATINEE_PLEINE = 4 // en dessous, une session matinale isolée est recalée pour finir à midi
-  const DUREE_MIN_DEMARRAGE_NOUVELLE_FORMATION = 2 // une nouvelle formation ne démarre pas dans un reliquat trop court (ex. 11h-12h) : elle attend l'après-midi ou le lendemain
 
   // Découpe un créneau qui chevaucherait la pause déjeuner en deux blocs (matin / après-midi).
   function decouperAvecPauseDejeuner(heureDebutJour, dureeJour) {
@@ -246,101 +250,80 @@ export default function Planning() {
     ]
   }
 
-  // Génère le planning par défaut en optimisant le remplissage : une nouvelle formation continue sur
-  // le créneau restant du jour en cours (si la place le permet) au lieu de systématiquement sauter au
-  // jour suivant — ça évite les petits "bouts" de formation isolés sur une journée dédiée pour presque rien.
+  // Nombre de jours nécessaires pour une formation de "dureeTotale" heures démarrant à "jourDepart",
+  // en tenant compte du plafond réduit du lundi (arrivée le matin, formation l'après-midi seulement).
+  function calculerJoursNecessaires(jourDepart, dureeTotale) {
+    if (jourDepart.getDay() === 1) {
+      const reste = Math.max(0, dureeTotale - MAX_DUREE_DEMARRAGE_APRES_MIDI)
+      return 1 + Math.ceil(reste / MAX_DUREE_JOUR)
+    }
+    return Math.max(1, Math.ceil(dureeTotale / MAX_DUREE_JOUR))
+  }
+
+  // Répartit la durée totale sur les jours de façon équilibrée : chaque jour reçoit une part
+  // proportionnelle du temps qui reste à répartir, plutôt que de remplir chaque jour au maximum et de
+  // laisser un petit reliquat de 1-2h en fin de formation.
+  function repartirDureeParJour(jourDepart, dureeTotale, n) {
+    const jours = []
+    let d = new Date(jourDepart)
+    let dureeRestante = dureeTotale
+    for (let i = 0; i < n; i++) {
+      let dureeJour
+      if (d.getDay() === 1) {
+        dureeJour = Math.min(dureeRestante, MAX_DUREE_DEMARRAGE_APRES_MIDI)
+      } else {
+        const joursRestants = n - i
+        dureeJour = Math.min(Math.round((dureeRestante / joursRestants) * 2) / 2, MAX_DUREE_JOUR)
+      }
+      jours.push({ date: new Date(d), duree: dureeJour })
+      dureeRestante -= dureeJour
+      if (i < n - 1) d = jourOuvreSuivant(d)
+    }
+    return jours
+  }
+
+  // Génère le planning par défaut : une formation démarre toujours un jour frais (jamais partagée
+  // avec une autre formation), reste groupée sur des jours consécutifs sans traverser un week-end
+  // (repoussée au lundi suivant si besoin), et répartit ses heures équitablement pour éviter les
+  // petits blocs isolés de 1-2h — plus réaliste que l'optimisation pure : les équipes formées suivent
+  // en général un planning posté, on n'enchaîne pas des groupes différents sur une même demi-journée.
   async function genererPlanningParDefaut(demandeIdCible, scenarioIdCible, lignesData) {
     if (!lignesData || lignesData.length === 0 || formateurs.length === 0) return
     let jourCourant = null
-    let heureCourante = null
-    let heureFinJourCourant = null
     const blocs = []
-
-    function capaciteRestanteJour() {
-      const pauseAVenir = heureCourante < PAUSE_DEJEUNER_DEBUT
-      const budget = pauseAVenir
-        ? heureFinJourCourant - heureCourante - (PAUSE_DEJEUNER_FIN - PAUSE_DEJEUNER_DEBUT)
-        : heureFinJourCourant - heureCourante
-      return Math.max(0, budget)
-    }
-
-    function demarrerNouveauJour() {
-      jourCourant =
-        jourCourant === null
-          ? prochainLundi(new Date(new Date().toDateString()))
-          : jourOuvreSuivant(jourCourant)
-      const demarreApresMidi = jourCourant.getDay() === 1
-      heureCourante = demarreApresMidi ? HEURE_DEBUT_LUNDI : HEURE_DEBUT_JOUR
-      heureFinJourCourant = demarreApresMidi
-        ? HEURE_DEBUT_LUNDI + MAX_DUREE_DEMARRAGE_APRES_MIDI
-        : HEURE_DEBUT_JOUR + MAX_DUREE_JOUR + (PAUSE_DEJEUNER_FIN - PAUSE_DEJEUNER_DEBUT)
-    }
-
-    // Une NOUVELLE formation ne démarre que s'il reste assez de place avant la prochaine coupure
-    // (déjeuner ou fin de journée) ; sinon on saute directement à la coupure suivante plutôt que
-    // de caser un reliquat de 1h juste avant midi. Les blocs suivants de la MÊME formation, eux,
-    // peuvent toujours utiliser un reliquat court (c'est la fin naturelle d'un multi-jours).
-    function garantirPlaceDemarrage(dureeLigne) {
-      while (true) {
-        if (jourCourant === null || capaciteRestanteJour() <= 0) {
-          demarrerNouveauJour()
-          continue
-        }
-        if (capaciteRestanteJour() >= Math.min(dureeLigne, DUREE_MIN_DEMARRAGE_NOUVELLE_FORMATION)) return
-        if (heureCourante < PAUSE_DEJEUNER_DEBUT) {
-          heureCourante = PAUSE_DEJEUNER_FIN
-        } else {
-          demarrerNouveauJour()
-        }
-      }
-    }
 
     for (const ligne of lignesData) {
       const formateur = trouverFormateurPourCode(ligne.formations_catalogue?.code)
-      let dureeRestante = ligne.formations_catalogue?.duree_h || 4
-      garantirPlaceDemarrage(dureeRestante)
-      while (dureeRestante > 0) {
-        if (jourCourant === null || capaciteRestanteJour() <= 0) {
-          demarrerNouveauJour()
-        }
-        const dureeChunk = Math.min(dureeRestante, capaciteRestanteJour())
-        const segments = decouperAvecPauseDejeuner(heureCourante, dureeChunk)
-        for (const segment of segments) {
+      const dureeTotale = ligne.formations_catalogue?.duree_h || 4
+
+      let jourDepart =
+        jourCourant === null ? prochainLundi(new Date(new Date().toDateString())) : jourOuvreSuivant(jourCourant)
+
+      let n = calculerJoursNecessaires(jourDepart, dureeTotale)
+      if (jourDepart.getDay() + (n - 1) > 5) {
+        // Traverserait le week-end : on préfère démarrer la semaine suivante plutôt que de couper
+        // la formation par deux jours de coupure.
+        jourDepart = prochainLundi(jourDepart)
+        n = calculerJoursNecessaires(jourDepart, dureeTotale)
+      }
+
+      const jours = repartirDureeParJour(jourDepart, dureeTotale, n)
+      for (const { date, duree } of jours) {
+        const heureDebutJour = date.getDay() === 1 ? HEURE_DEBUT_LUNDI : HEURE_DEBUT_JOUR
+        for (const segment of decouperAvecPauseDejeuner(heureDebutJour, duree)) {
           blocs.push({
             demande_id: demandeIdCible,
             demande_ligne_id: ligne.id,
             scenario_id: scenarioIdCible,
             formateur_id: formateur.id,
             type: 'formation',
-            date: formatDate(jourCourant),
+            date: formatDate(date),
             heure_debut: decimalEnHeure(segment.heure_debut),
             heure_fin: decimalEnHeure(segment.heure_fin),
           })
         }
-        heureCourante = segments[segments.length - 1].heure_fin
-        if (heureCourante >= PAUSE_DEJEUNER_DEBUT && heureCourante < PAUSE_DEJEUNER_FIN) {
-          heureCourante = PAUSE_DEJEUNER_FIN
-        }
-        dureeRestante -= dureeChunk
       }
-    }
-
-    // Post-traitement : une session matinale courte (<4h) restée seule ce jour-là (rien l'après-midi)
-    // est recalée pour finir à midi plutôt que de trainer en début de matinée avec un grand vide après.
-    const parJour = {}
-    for (const b of blocs) {
-      if (!parJour[b.date]) parJour[b.date] = []
-      parJour[b.date].push(b)
-    }
-    for (const blocsJour of Object.values(parJour)) {
-      if (blocsJour.length !== 1) continue
-      const b = blocsJour[0]
-      const debut = heureEnDecimal(b.heure_debut)
-      const fin = heureEnDecimal(b.heure_fin)
-      if (debut < PAUSE_DEJEUNER_DEBUT && fin <= PAUSE_DEJEUNER_DEBUT && fin - debut < DUREE_MIN_MATINEE_PLEINE) {
-        b.heure_debut = decimalEnHeure(PAUSE_DEJEUNER_DEBUT - (fin - debut))
-        b.heure_fin = decimalEnHeure(PAUSE_DEJEUNER_DEBUT)
-      }
+      jourCourant = jours[jours.length - 1].date
     }
 
     await supabase.from('creneaux').insert(blocs)
@@ -463,7 +446,7 @@ export default function Planning() {
     setNomCopie('')
     setConfirmerSuppressionScenario(false)
     setConfirmerRegeneration(false)
-    setBlocEnConfirmation('')
+    setBlocSelectionneId('')
     const { data } = await supabase
       .from('creneaux')
       .select('id, type, date, heure_debut, heure_fin, formateur_id, demande_ligne_id, demande_lignes(groupe, formations_catalogue(nom, code))')
@@ -556,11 +539,7 @@ export default function Planning() {
   }
 
   async function supprimerBloc(id) {
-    if (blocEnConfirmation !== id) {
-      setBlocEnConfirmation(id)
-      return
-    }
-    setBlocEnConfirmation('')
+    if (blocSelectionneId === id) setBlocSelectionneId('')
     await supabase.from('creneaux').delete().eq('id', id)
     await finaliserMutation()
   }
@@ -972,9 +951,9 @@ export default function Planning() {
                       <button
                         className="planning-bloc-supprimer"
                         onClick={() => supprimerBloc(c.id)}
-                        title={blocEnConfirmation === c.id ? 'Cliquer pour confirmer' : 'Retirer ce bloc'}
+                        title="Retirer ce bloc"
                       >
-                        {blocEnConfirmation === c.id ? '✓' : '×'}
+                        ×
                       </button>
                     )}
                     {estFormation ? (
