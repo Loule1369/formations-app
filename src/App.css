@@ -350,27 +350,16 @@
   background: #fafafa;
 }
 
-.liste-resume-formations {
-  margin: 0.25rem 0 0.75rem;
-  padding-left: 1.2rem;
-}
-
 .section-devis {
   margin-bottom: 2rem;
   padding-bottom: 1rem;
   border-bottom: 1px solid #eee;
 }
 
-.recap-devis {
-  margin-top: 1rem;
-  padding: 1rem;
-  background: #fafafa;
-  border-radius: 6px;
-  max-width: 400px;
-}
-
-.recap-devis p {
-  margin: 0.25rem 0;
+.table-recap-info th {
+  width: 220px;
+  white-space: nowrap;
+  color: #555;
 }
 
 .badge-origine {

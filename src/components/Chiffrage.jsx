@@ -162,35 +162,38 @@ export default function Chiffrage() {
         if (!c.demande_ligne_id) continue
         parLigne[c.demande_ligne_id] = c.demande_lignes
       }
-      const lignesFormations = []
-      const preparationsVues = new Set()
+      // Regroupe par formation (et non par groupe) : une seule ligne Animation dont la quantité est
+      // le nombre de groupes, et une seule ligne Préparation (jamais multipliée par les groupes).
+      const parFormationId = {}
       for (const dl of Object.values(parLigne)) {
-        const cat = dl?.formations_catalogue
+        if (!dl?.formation_id) continue
+        if (!parFormationId[dl.formation_id]) parFormationId[dl.formation_id] = { catalogue: dl.formations_catalogue, nbGroupes: 0 }
+        parFormationId[dl.formation_id].nbGroupes += 1
+      }
+      const lignesFormations = []
+      for (const { catalogue: cat, nbGroupes } of Object.values(parFormationId)) {
         if (!cat) continue
         const dureeAnimation = cat.duree_h || 0
         lignesFormations.push({
           demande_id: demandeId,
-          libelle: `${cat.nom}${dl.groupe ? ` (Groupe ${dl.groupe})` : ''} — Animation (${dureeAnimation}h)`,
-          quantite: 1,
+          libelle: `${cat.nom} — Animation (${dureeAnimation}h par groupe)`,
+          quantite: nbGroupes,
           prix_unitaire: arrondi2((dureeAnimation / JOUR_H) * TARIF_JOUR_ANIMATION_PV),
           prix_revient: arrondi2((dureeAnimation / JOUR_H) * TARIF_JOUR_PV_PR),
           origine: 'planning',
           categorie: 'formation',
         })
-        if (dl.formation_id && !preparationsVues.has(dl.formation_id)) {
-          preparationsVues.add(dl.formation_id)
-          const dureePrep = cat.duree_prep_h || 0
-          if (dureePrep > 0) {
-            lignesFormations.push({
-              demande_id: demandeId,
-              libelle: `${cat.nom} — Préparation (${dureePrep}h, une seule fois quel que soit le nombre de groupes)`,
-              quantite: 1,
-              prix_unitaire: arrondi2((dureePrep / JOUR_H) * TARIF_JOUR_PREP_PV),
-              prix_revient: arrondi2((dureePrep / JOUR_H) * TARIF_JOUR_PV_PR),
-              origine: 'planning',
-              categorie: 'formation',
-            })
-          }
+        const dureePrep = cat.duree_prep_h || 0
+        if (dureePrep > 0) {
+          lignesFormations.push({
+            demande_id: demandeId,
+            libelle: `${cat.nom} — Préparation (${dureePrep}h, une seule fois quel que soit le nombre de groupes)`,
+            quantite: 1,
+            prix_unitaire: arrondi2((dureePrep / JOUR_H) * TARIF_JOUR_PREP_PV),
+            prix_revient: arrondi2((dureePrep / JOUR_H) * TARIF_JOUR_PV_PR),
+            origine: 'planning',
+            categorie: 'formation',
+          })
         }
       }
 
@@ -491,46 +494,95 @@ export default function Chiffrage() {
         )
       })}
 
-      <div className="recap-devis">
+      <section className="section-devis">
         <h2>Récapitulatif du projet</h2>
-        <p>Client : <strong>{clientNom}</strong></p>
-        {resume && (
-          <>
-            <p>Statut de la demande : <strong>{STATUT_LABELS[resume.statut] || resume.statut}</strong></p>
-            <p>Demande créée le : <strong>{resume.dateCreation}</strong></p>
-            {resume.notes && <p>Notes : {resume.notes}</p>}
-            {resume.dateDebut && (
-              <p>Période de formation : <strong>du {resume.dateDebut} au {resume.dateFin}</strong></p>
-            )}
-            <p>
-              Formateur(s) : <strong>{resume.formateurNoms.length > 0 ? resume.formateurNoms.join(', ') : '—'}</strong>
-            </p>
-            <p>Formations demandées :</p>
-            <ul className="liste-resume-formations">
-              {resume.formations.map((f, i) => (
-                <li key={i}>
-                  {f.formations_catalogue?.nom}
-                  {f.groupe ? ` (Groupe ${f.groupe})` : ''} — {f.nb_participants || 1} participant(s)
-                </li>
-              ))}
-            </ul>
-          </>
+        <p className="astuce">
+          Prêt à transmettre à l'administration des ventes et à reprendre dans l'outil de gestion de projet.
+        </p>
+
+        <div className="table-devis-scroll">
+          <table className="table-devis table-recap-info">
+            <tbody>
+              <tr><th>Client</th><td>{clientNom}</td></tr>
+              {resume && (
+                <>
+                  <tr><th>Statut de la demande</th><td>{STATUT_LABELS[resume.statut] || resume.statut}</td></tr>
+                  <tr><th>Demande créée le</th><td>{resume.dateCreation}</td></tr>
+                  {resume.notes && <tr><th>Notes</th><td>{resume.notes}</td></tr>}
+                  {resume.dateDebut && (
+                    <tr><th>Période de formation</th><td>du {resume.dateDebut} au {resume.dateFin}</td></tr>
+                  )}
+                  <tr>
+                    <th>Formateur(s)</th>
+                    <td>{resume.formateurNoms.length > 0 ? resume.formateurNoms.join(', ') : '—'}</td>
+                  </tr>
+                </>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {resume && resume.formations.length > 0 && (
+          <div className="table-devis-scroll">
+            <table className="table-devis">
+              <thead>
+                <tr>
+                  <th>Formation</th>
+                  <th>Groupe</th>
+                  <th>Participants</th>
+                </tr>
+              </thead>
+              <tbody>
+                {resume.formations.map((f, i) => (
+                  <tr key={i}>
+                    <td>{f.formations_catalogue?.nom}</td>
+                    <td>{f.groupe || '—'}</td>
+                    <td>{f.nb_participants || 1}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
-        <hr />
-        {CATEGORIES.map((cat) => {
-          const t = totaux(lignes.filter((l) => l.categorie === cat))
-          if (t.pv === 0 && t.pr === 0) return null
-          return (
-            <p key={cat}>
-              {CATEGORIE_LABELS[cat]} : <strong>{t.pv.toFixed(2)} €</strong> (marge {t.marge.toFixed(2)} €)
-            </p>
-          )
-        })}
-        <hr />
-        <p>Total prix de vente HT : <strong>{totalGeneral.pv.toFixed(2)} €</strong></p>
-        <p>Total prix de revient HT : <strong>{totalGeneral.pr.toFixed(2)} €</strong></p>
-        <p>Marge : <strong>{totalGeneral.marge.toFixed(2)} €</strong> ({totalGeneral.taux.toFixed(0)}%)</p>
-      </div>
+
+        <div className="table-devis-scroll">
+          <table className="table-devis">
+            <thead>
+              <tr>
+                <th>Catégorie</th>
+                <th>Total PV HT</th>
+                <th>Total PR HT</th>
+                <th>Marge</th>
+                <th>Taux</th>
+              </tr>
+            </thead>
+            <tbody>
+              {CATEGORIES.map((cat) => {
+                const t = totaux(lignes.filter((l) => l.categorie === cat))
+                if (t.pv === 0 && t.pr === 0) return null
+                return (
+                  <tr key={cat}>
+                    <td>{CATEGORIE_LABELS[cat]}</td>
+                    <td>{t.pv.toFixed(2)} €</td>
+                    <td>{t.pr.toFixed(2)} €</td>
+                    <td>{t.marge.toFixed(2)} €</td>
+                    <td>{t.taux.toFixed(0)}%</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+            <tfoot>
+              <tr>
+                <td><strong>Total général</strong></td>
+                <td><strong>{totalGeneral.pv.toFixed(2)} €</strong></td>
+                <td><strong>{totalGeneral.pr.toFixed(2)} €</strong></td>
+                <td><strong>{totalGeneral.marge.toFixed(2)} €</strong></td>
+                <td><strong>{totalGeneral.taux.toFixed(0)}%</strong></td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </section>
     </div>
   )
 }
