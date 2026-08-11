@@ -56,6 +56,7 @@ export default function Planning() {
   const [confirmerSuppressionScenario, setConfirmerSuppressionScenario] = useState(false)
   const [confirmerRegeneration, setConfirmerRegeneration] = useState(false)
   const [redimensionnementEnCours, setRedimensionnementEnCours] = useState(null)
+  const [glissementEnCours, setGlissementEnCours] = useState(null)
 
   function heureFinDurantRedimensionnement(creneau, hauteurPx) {
     const duree = Math.max(0.5, Math.round((hauteurPx / HOUR_HEIGHT) * 2) / 2)
@@ -901,13 +902,21 @@ export default function Planning() {
                   <Rnd
                     key={c.id}
                     size={{ width: pos.width, height: pos.height }}
-                    position={{ x: pos.x, y: pos.y }}
+                    position={
+                      glissementEnCours?.id === c.id
+                        ? { x: glissementEnCours.x, y: glissementEnCours.y }
+                        : { x: pos.x, y: pos.y }
+                    }
                     minHeight={HOUR_HEIGHT / 2}
                     bounds="parent"
                     disableDragging={!estFormation}
                     enableResizing={estFormation ? { bottom: true, top: false, left: false, right: false } : false}
                     cancel=".planning-bloc-select, .planning-bloc-supprimer"
-                    onDragStop={(e, d) => deplacerBloc(c, d.x, d.y)}
+                    onDrag={(e, d) => setGlissementEnCours({ id: c.id, x: d.x, y: d.y })}
+                    onDragStop={(e, d) => {
+                      setGlissementEnCours(null)
+                      deplacerBloc(c, d.x, d.y)
+                    }}
                     onResize={(e, dir, ref) =>
                       setRedimensionnementEnCours({ id: c.id, heureFin: heureFinDurantRedimensionnement(c, ref.offsetHeight) })
                     }
