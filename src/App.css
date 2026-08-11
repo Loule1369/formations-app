@@ -296,6 +296,24 @@
   padding: 0 2px;
 }
 
+.planning-bloc-dupliquer {
+  position: absolute;
+  top: 1px;
+  right: 16px;
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 0.8rem;
+  line-height: 1;
+  padding: 0 2px;
+  opacity: 0.85;
+}
+
+.planning-bloc.deplacement .planning-bloc-dupliquer {
+  right: 2px;
+}
+
 .planning-bloc-poignee {
   position: absolute;
   left: 0;
@@ -334,10 +352,19 @@
   width: 6rem;
 }
 
+.table-devis .input-libelle {
+  min-width: 420px;
+}
+
 .table-devis tfoot td {
   border-top: 2px solid #ccc;
   border-bottom: none;
   background: #fafafa;
+}
+
+.liste-resume-formations {
+  margin: 0.25rem 0 0.75rem;
+  padding-left: 1.2rem;
 }
 
 .section-devis {

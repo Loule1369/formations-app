@@ -608,6 +608,33 @@ export default function Planning() {
     await finaliserMutation()
   }
 
+  // Duplique un bloc (formation ou déplacement) le jour suivant, à glisser ensuite où besoin.
+  async function dupliquerBloc(creneau) {
+    setMessage('')
+    setSucces('')
+    const indexActuel = jours.findIndex((j) => formatDate(j) === creneau.date)
+    const nouvelleDate = formatDate(jours[Math.min(indexActuel + 1, DAYS_SHOWN - 1)])
+    const { error } = await supabase.from('creneaux').insert({
+      demande_id: demandeId,
+      demande_ligne_id: creneau.demande_ligne_id,
+      scenario_id: scenarioId,
+      formateur_id: creneau.formateur_id,
+      type: creneau.type,
+      date: nouvelleDate,
+      heure_debut: creneau.heure_debut,
+      heure_fin: creneau.heure_fin,
+      modifie_manuellement: creneau.type === 'deplacement',
+    })
+    if (error) {
+      setMessage(error.message)
+      return
+    }
+    if (creneau.type === 'formation') {
+      await synchroniserDeplacements(scenarioId, demandeId)
+    }
+    await chargerScenario(scenarioId)
+  }
+
   async function conflitAvecPlanningsRetenus(formateurId, date, heureDebut, heureFin, excluCreneauId) {
     const chevauche = (c) =>
       c.id !== excluCreneauId &&
@@ -747,7 +774,7 @@ export default function Planning() {
   // appliquée directement sur le DOM via une ref, sans passer par React — donc parfaitement fluide
   // et sans aucun décalage possible avec la souris. On ne recalcule/persiste qu'au relâchement.
   function demarrerGlisser(e, c, pos) {
-    if (e.target.closest('.planning-bloc-select, .planning-bloc-supprimer, .planning-bloc-poignee')) return
+    if (e.target.closest('.planning-bloc-select, .planning-bloc-supprimer, .planning-bloc-dupliquer, .planning-bloc-poignee')) return
     e.preventDefault()
     const node = blocRefs.current[c.id]
     const startX = e.clientX
@@ -1009,6 +1036,13 @@ export default function Planning() {
                     }}
                     onMouseDown={(e) => demarrerGlisser(e, c, pos)}
                   >
+                    <button
+                      className="planning-bloc-dupliquer"
+                      onClick={() => dupliquerBloc(c)}
+                      title="Dupliquer ce bloc (le lendemain, à glisser ensuite)"
+                    >
+                      ⧉
+                    </button>
                     {estFormation && (
                       <button
                         className="planning-bloc-supprimer"

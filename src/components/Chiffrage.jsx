@@ -3,28 +3,50 @@ import { supabase } from '../lib/supabaseClient'
 import { grouperVoyages, dureeHeures } from '../lib/dates'
 import { useProjetActif } from '../lib/ProjetActifContext'
 
-// Prix de vente / prix de revient HT (source : "2026_Outil de chiffrage des offres de formation.xlsx", feuille "Autres tarifs").
+// Tarifs de référence (source : "2026_Outil de chiffrage des offres de formation.xlsx", feuille "Autres tarifs" / "ACTIF").
 const TARIF_NUIT_HOTEL_PV = 135
 const TARIF_NUIT_HOTEL_PR = 120
 const TARIF_REPAS_PV = 30
 const TARIF_REPAS_PR = 25
-// Taux horaire (source : même fichier, coin "Taux Horaires" de la feuille ACTIF) — le prix de vente
-// est unique, le coût de revient dépend du service du formateur.
 const TARIF_HORAIRE_PV = 150
 const TARIF_HORAIRE_PR_PAR_SERVICE = { FORDOC: 79.68, SAV: 84.52, DIH: 68.65, INSTALL: 81.01 }
 const TARIF_HORAIRE_PR_DEFAUT = 79.68
+const JOUR_H = 7 // longueur conventionnelle d'une journée pour convertir des heures en "jours"
+const TARIF_JOUR_ANIMATION_PV = 1200
+const TARIF_JOUR_PREP_PV = 920
+const TARIF_JOUR_PV_PR = 637.44 // même coût de revient journalier, que ce soit animation ou préparation
 
-const CATEGORIES = ['formation', 'deplacement', 'administratif', 'ascentline', 'autre']
+const STATUT_LABELS = {
+  besoin_exprime: 'Besoin exprimé',
+  devis_envoye: 'Devis envoyé',
+  valide: 'Validé',
+  saisi_queoval: 'Saisi QUEOVAL',
+  termine: 'Terminé',
+}
+
+const CATEGORIES = ['formation', 'administratif', 'deplacement', 'ascentline', 'autre']
 const CATEGORIE_LABELS = {
   formation: 'Formations',
-  deplacement: 'Déplacement & hébergement',
   administratif: 'Administratif',
+  deplacement: 'Déplacement & hébergement',
   ascentline: 'Licences Ascentline',
   autre: 'Autres',
 }
 
+function arrondi2(n) {
+  return Math.round(n * 100) / 100
+}
+
 function ligneVide() {
   return { libelle: 'Nouvelle ligne', quantite: 1, prix_unitaire: 0, prix_revient: 0, origine: null, categorie: 'autre' }
+}
+
+// FORDOC (sous-traitant) toujours en tête des frais de déplacement, les services internes ensuite.
+function comparerLignesDeplacement(a, b) {
+  const aFordoc = a.libelle.includes('FORDOC') ? 0 : 1
+  const bFordoc = b.libelle.includes('FORDOC') ? 0 : 1
+  if (aFordoc !== bFordoc) return aFordoc - bFordoc
+  return a.libelle.localeCompare(b.libelle)
 }
 
 export default function Chiffrage() {
@@ -33,6 +55,7 @@ export default function Chiffrage() {
   const [scenarioId, setScenarioId] = useState('')
   const [lignes, setLignes] = useState([])
   const [formateurs, setFormateurs] = useState([])
+  const [resume, setResume] = useState(null)
 
   const [message, setMessage] = useState('')
   const [succes, setSucces] = useState('')
@@ -54,6 +77,14 @@ export default function Chiffrage() {
     }
     chargerDemande(demandeId)
   }, [demandeId])
+
+  useEffect(() => {
+    if (!scenarioId) {
+      setResume(null)
+      return
+    }
+    chargerResume(scenarioId)
+  }, [scenarioId])
 
   // Dès qu'un scénario est sélectionné et qu'aucune ligne n'existe encore, on génère le devis
   // théorique automatiquement — pas besoin de cliquer le bouton à chaque ouverture.
@@ -82,6 +113,25 @@ export default function Chiffrage() {
     setLignes(data || [])
   }
 
+  async function chargerResume(scenarioIdCible) {
+    const [demandeRes, lignesRes, creneauxRes] = await Promise.all([
+      supabase.from('demandes').select('statut, date_creation, notes').eq('id', demandeId).single(),
+      supabase.from('demande_lignes').select('nb_participants, groupe, formations_catalogue(nom)').eq('demande_id', demandeId),
+      supabase.from('creneaux').select('date, formateur_id').eq('scenario_id', scenarioIdCible).eq('type', 'formation'),
+    ])
+    const dates = (creneauxRes.data || []).map((c) => c.date).sort()
+    const formateurIds = [...new Set((creneauxRes.data || []).map((c) => c.formateur_id))]
+    setResume({
+      statut: demandeRes.data?.statut,
+      dateCreation: demandeRes.data?.date_creation,
+      notes: demandeRes.data?.notes,
+      formations: lignesRes.data || [],
+      formateurNoms: formateurIds.map((id) => formateurs.find((f) => f.id === id)?.nom || id),
+      dateDebut: dates[0],
+      dateFin: dates[dates.length - 1],
+    })
+  }
+
   function serviceDuFormateur(formateurId) {
     return formateurs.find((f) => f.id === formateurId)?.service || 'Autre service'
   }
@@ -97,29 +147,52 @@ export default function Chiffrage() {
     try {
       const { data: creneaux } = await supabase
         .from('creneaux')
-        .select('type, date, heure_debut, heure_fin, formateur_id, demande_ligne_id, demande_lignes(groupe, formations_catalogue(nom, prix, prix_revient))')
+        .select(
+          'type, date, heure_debut, heure_fin, formateur_id, demande_ligne_id, demande_lignes(formation_id, groupe, formations_catalogue(nom, duree_h, duree_prep_h))',
+        )
         .eq('scenario_id', scenarioId)
 
       const formations = (creneaux || []).filter((c) => c.type === 'formation')
       const deplacements = (creneaux || []).filter((c) => c.type === 'deplacement')
 
-      // Une ligne par formation demandée (regroupe les blocs matin/après-midi/plusieurs jours).
+      // Une ligne "Animation" par groupe (regroupe les blocs matin/après-midi/plusieurs jours d'un
+      // même groupe), et une seule ligne "Préparation" par formation (indépendante du nombre de groupes).
       const parLigne = {}
       for (const c of formations) {
         if (!c.demande_ligne_id) continue
         parLigne[c.demande_ligne_id] = c.demande_lignes
       }
-      const lignesFormations = Object.values(parLigne)
-        .filter(Boolean)
-        .map((dl) => ({
+      const lignesFormations = []
+      const preparationsVues = new Set()
+      for (const dl of Object.values(parLigne)) {
+        const cat = dl?.formations_catalogue
+        if (!cat) continue
+        const dureeAnimation = cat.duree_h || 0
+        lignesFormations.push({
           demande_id: demandeId,
-          libelle: `${dl.formations_catalogue?.nom || 'Formation'}${dl.groupe ? ` (Groupe ${dl.groupe})` : ''}`,
+          libelle: `${cat.nom}${dl.groupe ? ` (Groupe ${dl.groupe})` : ''} — Animation (${dureeAnimation}h)`,
           quantite: 1,
-          prix_unitaire: dl.formations_catalogue?.prix || 0,
-          prix_revient: dl.formations_catalogue?.prix_revient || 0,
+          prix_unitaire: arrondi2((dureeAnimation / JOUR_H) * TARIF_JOUR_ANIMATION_PV),
+          prix_revient: arrondi2((dureeAnimation / JOUR_H) * TARIF_JOUR_PV_PR),
           origine: 'planning',
           categorie: 'formation',
-        }))
+        })
+        if (dl.formation_id && !preparationsVues.has(dl.formation_id)) {
+          preparationsVues.add(dl.formation_id)
+          const dureePrep = cat.duree_prep_h || 0
+          if (dureePrep > 0) {
+            lignesFormations.push({
+              demande_id: demandeId,
+              libelle: `${cat.nom} — Préparation (${dureePrep}h, une seule fois quel que soit le nombre de groupes)`,
+              quantite: 1,
+              prix_unitaire: arrondi2((dureePrep / JOUR_H) * TARIF_JOUR_PREP_PV),
+              prix_revient: arrondi2((dureePrep / JOUR_H) * TARIF_JOUR_PV_PR),
+              origine: 'planning',
+              categorie: 'formation',
+            })
+          }
+        }
+      }
 
       // Nuits d'hôtel et repas déduits des JOURS DE FORMATION réels (pas des dates des blocs
       // "Déplacement", qui ne sont que les 2 bornes arrivée/départ et cassent le calcul sur
@@ -200,9 +273,24 @@ export default function Chiffrage() {
       if (nouvellesLignes.length > 0) {
         await supabase.from('devis_lignes').insert(nouvellesLignes)
       }
+
+      // Ligne "Administratif" par défaut (0.5 jour) : ajoutée une seule fois, jamais recalculée
+      // ensuite — au chef de projet de l'ajuster selon le temps administratif réellement nécessaire.
+      if (!lignes.some((l) => l.categorie === 'administratif')) {
+        await supabase.from('devis_lignes').insert({
+          demande_id: demandeId,
+          libelle: 'Préparation / administratif / transport',
+          quantite: 0.5,
+          prix_unitaire: TARIF_JOUR_PREP_PV,
+          prix_revient: TARIF_JOUR_PV_PR,
+          origine: null,
+          categorie: 'administratif',
+        })
+      }
+
       await chargerLignes(demandeId)
       setSucces(
-        `Devis généré : ${lignesFormations.length} formation(s), frais de déplacement (nuits, repas, heures) ventilés par service. Vous pouvez tout ajuster ci-dessous.`,
+        `Devis généré : ${lignesFormations.length} ligne(s) de formation (animation + préparation), frais de déplacement ventilés par service. Vous pouvez tout ajuster ci-dessous.`,
       )
     } catch (err) {
       setMessage(err.message)
@@ -286,9 +374,9 @@ export default function Chiffrage() {
         </button>
       </div>
       <p className="astuce">
-        Ce bouton (re)calcule uniquement les lignes automatiques (formations, nuits, repas — ventilées
-        par service de formateur) à partir du planning. Les lignes ajoutées à la main (administratif,
-        licences Ascentline...) ne sont jamais touchées.
+        Ce bouton (re)calcule uniquement les lignes automatiques (formations, nuits, repas, heures de
+        déplacement) à partir du planning. Les lignes ajoutées à la main (administratif, licences
+        Ascentline...) ne sont jamais touchées.
       </p>
 
       {message && <p className="message erreur">{message}</p>}
@@ -296,6 +384,7 @@ export default function Chiffrage() {
 
       {CATEGORIES.map((cat) => {
         const lignesCat = lignes.filter((l) => l.categorie === cat)
+        if (cat === 'deplacement') lignesCat.sort(comparerLignesDeplacement)
         const t = totaux(lignesCat)
         return (
           <section key={cat} className="section-devis">
@@ -308,13 +397,13 @@ export default function Chiffrage() {
                   <thead>
                     <tr>
                       <th>Libellé</th>
-                      <th>Origine</th>
                       <th>Qté</th>
                       <th>PV unitaire HT</th>
                       <th>PR unitaire HT</th>
                       <th>Total PV HT</th>
                       <th>Total PR HT</th>
                       <th>Marge</th>
+                      <th>Origine</th>
                       <th></th>
                     </tr>
                   </thead>
@@ -327,15 +416,11 @@ export default function Chiffrage() {
                           <td>
                             <input
                               type="text"
+                              className="input-libelle"
                               value={l.libelle}
                               onChange={(e) => modifierLigneLocal(l.id, 'libelle', e.target.value)}
                               onBlur={() => sauvegarderLigne(l.id)}
                             />
-                          </td>
-                          <td>
-                            <span className={`badge-origine ${l.origine === 'planning' ? 'auto' : 'manuel'}`}>
-                              {l.origine === 'planning' ? 'Planning' : 'Manuel'}
-                            </span>
                           </td>
                           <td>
                             <input
@@ -370,6 +455,11 @@ export default function Chiffrage() {
                           <td>{totalLignePR.toFixed(2)} €</td>
                           <td>{(totalLignePV - totalLignePR).toFixed(2)} €</td>
                           <td>
+                            <span className={`badge-origine ${l.origine === 'planning' ? 'auto' : 'manuel'}`}>
+                              {l.origine === 'planning' ? 'Planning' : 'Manuel'}
+                            </span>
+                          </td>
+                          <td>
                             <button type="button" onClick={() => supprimerLigne(l.id)}>×</button>
                           </td>
                         </tr>
@@ -378,12 +468,16 @@ export default function Chiffrage() {
                   </tbody>
                   <tfoot>
                     <tr>
-                      <td colSpan={5}>
+                      <td>
                         <strong>Sous-total {CATEGORIE_LABELS[cat]}</strong>
                       </td>
+                      <td></td>
+                      <td></td>
+                      <td></td>
                       <td><strong>{t.pv.toFixed(2)} €</strong></td>
                       <td><strong>{t.pr.toFixed(2)} €</strong></td>
                       <td><strong>{t.marge.toFixed(2)} € ({t.taux.toFixed(0)}%)</strong></td>
+                      <td></td>
                       <td></td>
                     </tr>
                   </tfoot>
@@ -398,7 +492,31 @@ export default function Chiffrage() {
       })}
 
       <div className="recap-devis">
-        <h2>Récapitulatif</h2>
+        <h2>Récapitulatif du projet</h2>
+        <p>Client : <strong>{clientNom}</strong></p>
+        {resume && (
+          <>
+            <p>Statut de la demande : <strong>{STATUT_LABELS[resume.statut] || resume.statut}</strong></p>
+            <p>Demande créée le : <strong>{resume.dateCreation}</strong></p>
+            {resume.notes && <p>Notes : {resume.notes}</p>}
+            {resume.dateDebut && (
+              <p>Période de formation : <strong>du {resume.dateDebut} au {resume.dateFin}</strong></p>
+            )}
+            <p>
+              Formateur(s) : <strong>{resume.formateurNoms.length > 0 ? resume.formateurNoms.join(', ') : '—'}</strong>
+            </p>
+            <p>Formations demandées :</p>
+            <ul className="liste-resume-formations">
+              {resume.formations.map((f, i) => (
+                <li key={i}>
+                  {f.formations_catalogue?.nom}
+                  {f.groupe ? ` (Groupe ${f.groupe})` : ''} — {f.nb_participants || 1} participant(s)
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+        <hr />
         {CATEGORIES.map((cat) => {
           const t = totaux(lignes.filter((l) => l.categorie === cat))
           if (t.pv === 0 && t.pr === 0) return null

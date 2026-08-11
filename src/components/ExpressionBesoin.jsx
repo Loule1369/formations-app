@@ -11,7 +11,7 @@ const STATUT_LABELS = {
 }
 
 function ligneVide() {
-  return { formationId: '', nbParticipants: 1 }
+  return { formationId: '', nbParticipants: 1, nbGroupes: 1 }
 }
 
 export default function ExpressionBesoin() {
@@ -113,13 +113,20 @@ export default function ExpressionBesoin() {
         .single()
       if (demandeError) throw demandeError
 
-      const { error: lignesError } = await supabase.from('demande_lignes').insert(
-        lignesValides.map((l) => ({
+      const lignesAInserer = lignesValides.flatMap((l) => {
+        const nbGroupes = Math.max(1, Number(l.nbGroupes) || 1)
+        if (nbGroupes === 1) {
+          return [{ demande_id: demande.id, formation_id: l.formationId, nb_participants: Number(l.nbParticipants) || 1, groupe: null }]
+        }
+        return Array.from({ length: nbGroupes }, (_, i) => ({
           demande_id: demande.id,
           formation_id: l.formationId,
           nb_participants: Number(l.nbParticipants) || 1,
-        })),
-      )
+          groupe: i + 1,
+        }))
+      })
+
+      const { error: lignesError } = await supabase.from('demande_lignes').insert(lignesAInserer)
       if (lignesError) throw lignesError
 
       definirProjetActif(demande.id, finalClientNom)
@@ -178,6 +185,7 @@ export default function ExpressionBesoin() {
 
         <fieldset>
           <legend>Formations demandées</legend>
+          <p className="astuce">Participants / Groupes (si plusieurs sessions de la même formation sont nécessaires)</p>
           {lignes.map((ligne, index) => (
             <div className="ligne-formation" key={index}>
               <select
@@ -197,6 +205,13 @@ export default function ExpressionBesoin() {
                 value={ligne.nbParticipants}
                 onChange={(e) => majLigne(index, 'nbParticipants', e.target.value)}
                 title="Nombre de participants"
+              />
+              <input
+                type="number"
+                min="1"
+                value={ligne.nbGroupes}
+                onChange={(e) => majLigne(index, 'nbGroupes', e.target.value)}
+                title="Nombre de groupes (sessions distinctes de cette formation)"
               />
               {lignes.length > 1 && (
                 <button type="button" onClick={() => supprimerLigne(index)}>
