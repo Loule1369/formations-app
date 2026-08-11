@@ -1,5 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Rnd } from 'react-rnd'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../lib/supabaseClient'
 import { JOUR_MS, heureEnDecimal, decimalEnHeure, dureeHeures, formatDate, parseDate, grouperVoyages } from '../lib/dates'
 import { useProjetActif } from '../lib/ProjetActifContext'
@@ -56,10 +55,7 @@ export default function Planning() {
   const [confirmerSuppressionScenario, setConfirmerSuppressionScenario] = useState(false)
   const [confirmerRegeneration, setConfirmerRegeneration] = useState(false)
   const [redimensionnementEnCours, setRedimensionnementEnCours] = useState(null)
-  // Incrémenté après chaque glisser/redimensionnement terminé, pour forcer un remontage du bloc
-  // une fois la position définitive connue (acceptée ou refusée) — le geste lui-même reste géré
-  // entièrement par la bibliothèque, sans aucun re-rendu React pendant le mouvement.
-  const [nonceRepositionnement, setNonceRepositionnement] = useState(0)
+  const blocRefs = useRef({})
 
   function heureFinDurantRedimensionnement(creneau, hauteurPx) {
     const duree = Math.max(0.5, Math.round((hauteurPx / HOUR_HEIGHT) * 2) / 2)
@@ -703,6 +699,57 @@ export default function Planning() {
     await finaliserMutation()
   }
 
+  // Glisser/redimensionner maison (aucune bibliothèque tierce) : la position pendant le geste est
+  // appliquée directement sur le DOM via une ref, sans passer par React — donc parfaitement fluide
+  // et sans aucun décalage possible avec la souris. On ne recalcule/persiste qu'au relâchement.
+  function demarrerGlisser(e, c, pos) {
+    if (e.target.closest('.planning-bloc-select, .planning-bloc-supprimer, .planning-bloc-poignee')) return
+    e.preventDefault()
+    const node = blocRefs.current[c.id]
+    const startX = e.clientX
+    const startY = e.clientY
+    let dx = 0
+    let dy = 0
+
+    function onMove(ev) {
+      dx = ev.clientX - startX
+      dy = ev.clientY - startY
+      if (node) node.style.transform = `translate(${dx}px, ${dy}px)`
+    }
+    async function onUp() {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      if (node) node.style.transform = ''
+      if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
+        await deplacerBloc(c, pos.x + dx, pos.y + dy)
+      }
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
+  function demarrerRedimensionner(e, c, pos) {
+    e.stopPropagation()
+    e.preventDefault()
+    const node = blocRefs.current[c.id]
+    const startY = e.clientY
+    let hauteur = pos.height
+
+    function onMove(ev) {
+      hauteur = Math.max(HOUR_HEIGHT / 2, pos.height + (ev.clientY - startY))
+      if (node) node.style.height = `${hauteur}px`
+      setRedimensionnementEnCours({ id: c.id, heureFin: heureFinDurantRedimensionnement(c, hauteur) })
+    }
+    async function onUp() {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      setRedimensionnementEnCours(null)
+      await redimensionnerBloc(c, hauteur)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
   const alertesLegales = useMemo(() => {
     const alertes = []
     const parFormateurEtJour = {}
@@ -902,28 +949,21 @@ export default function Planning() {
                 const estFormation = c.type === 'formation'
                 const couleur = estFormation ? formationCouleur(c.demande_lignes?.formations_catalogue?.code) : '#888'
                 return (
-                  <Rnd
-                    key={`${c.id}:${nonceRepositionnement}`}
-                    default={{ x: pos.x, y: pos.y, width: pos.width, height: pos.height }}
-                    minHeight={HOUR_HEIGHT / 2}
-                    bounds="parent"
-                    disableDragging={!estFormation}
-                    enableResizing={estFormation ? { bottom: true, top: false, left: false, right: false } : false}
-                    cancel=".planning-bloc-select, .planning-bloc-supprimer"
-                    onDragStop={async (e, d) => {
-                      await deplacerBloc(c, d.x, d.y)
-                      setNonceRepositionnement((n) => n + 1)
-                    }}
-                    onResize={(e, dir, ref) =>
-                      setRedimensionnementEnCours({ id: c.id, heureFin: heureFinDurantRedimensionnement(c, ref.offsetHeight) })
-                    }
-                    onResizeStop={async (e, dir, ref) => {
-                      setRedimensionnementEnCours(null)
-                      await redimensionnerBloc(c, ref.offsetHeight)
-                      setNonceRepositionnement((n) => n + 1)
+                  <div
+                    key={c.id}
+                    ref={(node) => {
+                      blocRefs.current[c.id] = node
                     }}
                     className={`planning-bloc ${c.type}`}
-                    style={estFormation ? { background: couleur } : { borderColor: couleur }}
+                    style={{
+                      position: 'absolute',
+                      left: pos.x,
+                      top: pos.y,
+                      width: pos.width,
+                      height: pos.height,
+                      ...(estFormation ? { background: couleur } : { borderColor: couleur }),
+                    }}
+                    onMouseDown={estFormation ? (e) => demarrerGlisser(e, c, pos) : undefined}
                   >
                     {estFormation && (
                       <button
@@ -968,7 +1008,13 @@ export default function Planning() {
                         </div>
                       </>
                     )}
-                  </Rnd>
+                    {estFormation && (
+                      <div
+                        className="planning-bloc-poignee"
+                        onMouseDown={(e) => demarrerRedimensionner(e, c, pos)}
+                      />
+                    )}
+                  </div>
                 )
               })}
             </div>

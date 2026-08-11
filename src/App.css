@@ -296,6 +296,15 @@
   padding: 0 2px;
 }
 
+.planning-bloc-poignee {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 6px;
+  cursor: ns-resize;
+}
+
 .table-devis-scroll {
   overflow-x: auto;
 }
