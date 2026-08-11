@@ -46,16 +46,15 @@ export default function Planning() {
   const [creneaux, setCreneaux] = useState([])
   const [nomCopie, setNomCopie] = useState('')
 
-  const [ligneId, setLigneId] = useState('')
-  const [formateurAjoutId, setFormateurAjoutId] = useState('')
-
   const [message, setMessage] = useState('')
   const [succes, setSucces] = useState('')
   const [blocEnConfirmation, setBlocEnConfirmation] = useState('')
   const [confirmerSuppressionScenario, setConfirmerSuppressionScenario] = useState(false)
   const [confirmerRegeneration, setConfirmerRegeneration] = useState(false)
   const [redimensionnementEnCours, setRedimensionnementEnCours] = useState(null)
+  const [blocSelectionneId, setBlocSelectionneId] = useState('')
   const blocRefs = useRef({})
+  const blocCopieRef = useRef(null)
 
   function heureFinDurantRedimensionnement(creneau, hauteurPx) {
     const duree = Math.max(0.5, Math.round((hauteurPx / HOUR_HEIGHT) * 2) / 2)
@@ -79,7 +78,7 @@ export default function Planning() {
   const baseDate = useMemo(() => {
     if (creneaux.length === 0) return new Date(new Date().toDateString())
     const min = creneaux.reduce((m, c) => (c.date < m ? c.date : m), creneaux[0].date)
-    return new Date(parseDate(min).getTime() - JOUR_MS)
+    return parseDate(min)
   }, [creneaux])
 
   const jours = useMemo(
@@ -136,6 +135,30 @@ export default function Planning() {
       .order('nom')
       .then(({ data }) => data && setFormateurs(data))
   }, [])
+
+  // Copier/coller au clavier : un clic simple (sans glisser) sélectionne un bloc, Ctrl+C le copie,
+  // Ctrl+V le colle (dupliqué le lendemain, à glisser ensuite où besoin).
+  useEffect(() => {
+    function surTouche(e) {
+      const balise = document.activeElement?.tagName
+      if (balise === 'INPUT' || balise === 'SELECT' || balise === 'TEXTAREA') return
+      if (!(e.ctrlKey || e.metaKey)) return
+      const touche = e.key.toLowerCase()
+      if (touche === 'c') {
+        const bloc = creneaux.find((c) => c.id === blocSelectionneId)
+        if (bloc) {
+          e.preventDefault()
+          blocCopieRef.current = bloc
+          setSucces('Bloc copié — Ctrl+V pour le coller.')
+        }
+      } else if (touche === 'v' && blocCopieRef.current) {
+        e.preventDefault()
+        dupliquerBloc(blocCopieRef.current)
+      }
+    }
+    window.addEventListener('keydown', surTouche)
+    return () => window.removeEventListener('keydown', surTouche)
+  }, [creneaux, blocSelectionneId])
 
   useEffect(() => {
     if (demandeId && formateurs.length === 0) return // attend le chargement des formateurs
@@ -532,72 +555,6 @@ export default function Planning() {
     setSucces('Ce scénario est maintenant le planning retenu pour ce client.')
   }
 
-  async function ajouterBloc() {
-    setSucces('')
-    if (!formateurAjoutId) {
-      setMessage('Choisissez un formateur avant d’ajouter un bloc.')
-      return
-    }
-    if (!ligneId) {
-      setMessage('Choisissez une formation avant d’ajouter un bloc.')
-      return
-    }
-    const ligne = lignes.find((l) => l.id === ligneId)
-    const duree = ligne?.formations_catalogue?.duree_h || 4
-    const { error } = await supabase.from('creneaux').insert({
-      demande_id: demandeId,
-      scenario_id: scenarioId,
-      demande_ligne_id: ligneId,
-      formateur_id: formateurAjoutId,
-      type: 'formation',
-      date: formatDate(jours[1]),
-      heure_debut: '09:00:00',
-      heure_fin: decimalEnHeure(9 + Math.min(duree, WINDOW_END - 9)),
-    })
-    if (error) {
-      setMessage(error.message)
-      return
-    }
-    setMessage('')
-    await synchroniserDeplacements(scenarioId, demandeId)
-    await chargerScenario(scenarioId)
-  }
-
-  // Duplique une formation en un groupe supplémentaire (ex. 2 sessions pour 2 groupes de participants).
-  // Chaque groupe est une ligne de demande indépendante, planifiable séparément.
-  async function dupliquerGroupe(ligne) {
-    setMessage('')
-    setSucces('')
-    const soeurs = lignes.filter((l) => l.formation_id === ligne.formation_id)
-    const nouveauGroupe = Math.max(...soeurs.map((l) => l.groupe || 1)) + 1
-
-    const sansGroupe = soeurs.filter((l) => !l.groupe)
-    if (sansGroupe.length > 0) {
-      await supabase.from('demande_lignes').update({ groupe: 1 }).in('id', sansGroupe.map((l) => l.id))
-    }
-
-    const { data, error } = await supabase
-      .from('demande_lignes')
-      .insert({
-        demande_id: demandeId,
-        formation_id: ligne.formation_id,
-        nb_participants: ligne.nb_participants,
-        groupe: nouveauGroupe,
-      })
-      .select('id, formation_id, nb_participants, groupe, formations_catalogue(nom, duree_h, code)')
-      .single()
-    if (error) {
-      setMessage(error.message)
-      return
-    }
-
-    setLignes((prev) => [
-      ...prev.map((l) => (sansGroupe.some((s) => s.id === l.id) ? { ...l, groupe: 1 } : l)),
-      data,
-    ])
-    setSucces(`Groupe ${nouveauGroupe} créé pour « ${ligne.formations_catalogue?.nom} ». Ajoutez-le au planning via le formulaire ci-dessous.`)
-  }
-
   async function supprimerBloc(id) {
     if (blocEnConfirmation !== id) {
       setBlocEnConfirmation(id)
@@ -774,7 +731,7 @@ export default function Planning() {
   // appliquée directement sur le DOM via une ref, sans passer par React — donc parfaitement fluide
   // et sans aucun décalage possible avec la souris. On ne recalcule/persiste qu'au relâchement.
   function demarrerGlisser(e, c, pos) {
-    if (e.target.closest('.planning-bloc-select, .planning-bloc-supprimer, .planning-bloc-dupliquer, .planning-bloc-poignee')) return
+    if (e.target.closest('.planning-bloc-select, .planning-bloc-supprimer, .planning-bloc-poignee')) return
     e.preventDefault()
     const node = blocRefs.current[c.id]
     const startX = e.clientX
@@ -793,6 +750,9 @@ export default function Planning() {
       if (node) node.style.transform = ''
       if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
         await deplacerBloc(c, pos.x + dx, pos.y + dy)
+      } else {
+        // Simple clic (sans glisser) : sélectionne le bloc, prêt pour Ctrl+C / Ctrl+V.
+        setBlocSelectionneId(c.id)
       }
     }
     window.addEventListener('mousemove', onMove)
@@ -913,37 +873,6 @@ export default function Planning() {
             </button>
           </div>
 
-          <ul className="liste-lignes-demande">
-            {lignes.map((l) => (
-              <li key={l.id}>
-                {l.formations_catalogue?.nom}
-                {l.groupe ? <span className="badge-groupe">Groupe {l.groupe}</span> : null}
-                <button type="button" onClick={() => dupliquerGroupe(l)}>
-                  + Dupliquer (nouveau groupe)
-                </button>
-              </li>
-            ))}
-          </ul>
-
-          <div className="barre-ajout">
-            <select value={ligneId} onChange={(e) => setLigneId(e.target.value)}>
-              <option value="">— Formation —</option>
-              {lignes.map((l) => (
-                <option key={l.id} value={l.id}>
-                  {l.formations_catalogue?.nom}
-                  {l.groupe ? ` (Groupe ${l.groupe})` : ''}
-                </option>
-              ))}
-            </select>
-            <select value={formateurAjoutId} onChange={(e) => setFormateurAjoutId(e.target.value)}>
-              <option value="">— Formateur —</option>
-              {formateurs.map((f) => (
-                <option key={f.id} value={f.id}>{f.nom}</option>
-              ))}
-            </select>
-            <button type="button" onClick={ajouterBloc}>+ Ajouter un bloc supplémentaire</button>
-          </div>
-
           <div className="legende-formateurs">
             {Object.values(
               lignes.reduce((acc, l) => {
@@ -986,6 +915,9 @@ export default function Planning() {
                 width: LEFT_COL_WIDTH + DAYS_SHOWN * DAY_WIDTH,
                 height: HEADER_HEIGHT + COL_HEIGHT,
               }}
+              onMouseDown={(e) => {
+                if (e.target === e.currentTarget) setBlocSelectionneId('')
+              }}
             >
               <div className="planning-coin" style={{ width: LEFT_COL_WIDTH, height: HEADER_HEIGHT }} />
 
@@ -1025,7 +957,7 @@ export default function Planning() {
                     ref={(node) => {
                       blocRefs.current[c.id] = node
                     }}
-                    className={`planning-bloc ${c.type}`}
+                    className={`planning-bloc ${c.type}${blocSelectionneId === c.id ? ' selectionne' : ''}`}
                     style={{
                       position: 'absolute',
                       left: pos.x,
@@ -1036,13 +968,6 @@ export default function Planning() {
                     }}
                     onMouseDown={(e) => demarrerGlisser(e, c, pos)}
                   >
-                    <button
-                      className="planning-bloc-dupliquer"
-                      onClick={() => dupliquerBloc(c)}
-                      title="Dupliquer ce bloc (le lendemain, à glisser ensuite)"
-                    >
-                      ⧉
-                    </button>
                     {estFormation && (
                       <button
                         className="planning-bloc-supprimer"
@@ -1067,6 +992,8 @@ export default function Planning() {
                             ? redimensionnementEnCours.heureFin
                             : c.heure_fin
                           ).slice(0, 5)}
+                          {' · '}
+                          {nomFormateur(c.formateur_id)}
                         </div>
                         <select
                           className="planning-bloc-select"

@@ -296,22 +296,10 @@
   padding: 0 2px;
 }
 
-.planning-bloc-dupliquer {
-  position: absolute;
-  top: 1px;
-  right: 16px;
-  background: transparent;
-  border: none;
-  color: inherit;
-  cursor: pointer;
-  font-size: 0.8rem;
-  line-height: 1;
-  padding: 0 2px;
-  opacity: 0.85;
-}
-
-.planning-bloc.deplacement .planning-bloc-dupliquer {
-  right: 2px;
+.planning-bloc.selectionne {
+  outline: 3px solid #ffb400;
+  outline-offset: 1px;
+  z-index: 5;
 }
 
 .planning-bloc-poignee {
