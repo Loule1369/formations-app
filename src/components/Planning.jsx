@@ -906,8 +906,6 @@ export default function Planning() {
                     bounds="parent"
                     disableDragging={!estFormation}
                     enableResizing={estFormation ? { bottom: true, top: false, left: false, right: false } : false}
-                    dragGrid={[DAY_WIDTH, HOUR_HEIGHT / 2]}
-                    resizeGrid={[DAY_WIDTH, HOUR_HEIGHT / 2]}
                     cancel=".planning-bloc-select, .planning-bloc-supprimer"
                     onDragStop={(e, d) => deplacerBloc(c, d.x, d.y)}
                     onResize={(e, dir, ref) =>
