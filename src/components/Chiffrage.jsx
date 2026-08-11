@@ -24,21 +24,40 @@ const STATUT_LABELS = {
   termine: 'Terminé',
 }
 
-const CATEGORIES = ['formation', 'administratif', 'deplacement', 'ascentline', 'autre']
+const CATEGORIES = ['formation', 'administratif', 'elearning', 'ascentline', 'deplacement', 'autre']
 const CATEGORIE_LABELS = {
   formation: 'Formations',
   administratif: 'Administratif',
-  deplacement: 'Déplacement & hébergement',
+  elearning: 'Modules e-learning',
   ascentline: 'Licences Ascentline',
-  autre: 'Autres',
+  deplacement: 'Déplacement & hébergement',
+  autre: 'Frais divers',
 }
 
 function arrondi2(n) {
   return Math.round(n * 100) / 100
 }
 
-function ligneVide() {
-  return { libelle: 'Nouvelle ligne', quantite: 1, prix_unitaire: 0, prix_revient: 0, origine: null, categorie: 'autre' }
+function margeTaux(pv, pr) {
+  return pv > 0 ? ((pv - pr) / pv) * 100 : 0
+}
+
+function ligneVide(categorie) {
+  if (categorie === 'formation') {
+    return {
+      libelle: 'Nouvelle formation',
+      quantite: 1,
+      prix_unitaire: 0,
+      prix_revient: 0,
+      origine: null,
+      categorie,
+      jours_preparation: 0,
+      nb_groupes: 1,
+      jours_animation_unitaire: 0,
+      commentaires: '',
+    }
+  }
+  return { libelle: 'Nouvelle ligne', quantite: 1, prix_unitaire: 0, prix_revient: 0, origine: null, categorie }
 }
 
 // FORDOC (sous-traitant) toujours en tête des frais de déplacement, les services internes ensuite.
@@ -114,9 +133,12 @@ export default function Chiffrage() {
   }
 
   async function chargerResume(scenarioIdCible) {
-    const [demandeRes, lignesRes, creneauxRes] = await Promise.all([
-      supabase.from('demandes').select('statut, date_creation, notes').eq('id', demandeId).single(),
-      supabase.from('demande_lignes').select('nb_participants, groupe, formations_catalogue(nom)').eq('demande_id', demandeId),
+    const [demandeRes, creneauxRes] = await Promise.all([
+      supabase
+        .from('demandes')
+        .select('statut, date_creation, notes, remise_pv, remise_pr, arrondi_pv, arrondi_pr')
+        .eq('id', demandeId)
+        .single(),
       supabase.from('creneaux').select('date, formateur_id').eq('scenario_id', scenarioIdCible).eq('type', 'formation'),
     ])
     const dates = (creneauxRes.data || []).map((c) => c.date).sort()
@@ -125,7 +147,10 @@ export default function Chiffrage() {
       statut: demandeRes.data?.statut,
       dateCreation: demandeRes.data?.date_creation,
       notes: demandeRes.data?.notes,
-      formations: lignesRes.data || [],
+      remisePv: demandeRes.data?.remise_pv || 0,
+      remisePr: demandeRes.data?.remise_pr || 0,
+      arrondiPv: demandeRes.data?.arrondi_pv || 0,
+      arrondiPr: demandeRes.data?.arrondi_pr || 0,
       formateurNoms: formateurIds.map((id) => formateurs.find((f) => f.id === id)?.nom || id),
       dateDebut: dates[0],
       dateFin: dates[dates.length - 1],
@@ -155,15 +180,15 @@ export default function Chiffrage() {
       const formations = (creneaux || []).filter((c) => c.type === 'formation')
       const deplacements = (creneaux || []).filter((c) => c.type === 'deplacement')
 
-      // Une ligne "Animation" par groupe (regroupe les blocs matin/après-midi/plusieurs jours d'un
-      // même groupe), et une seule ligne "Préparation" par formation (indépendante du nombre de groupes).
+      // Une ligne par groupe planifié (déduplique matin/après-midi/plusieurs jours d'un même groupe).
       const parLigne = {}
       for (const c of formations) {
         if (!c.demande_ligne_id) continue
         parLigne[c.demande_ligne_id] = c.demande_lignes
       }
-      // Regroupe par formation (et non par groupe) : une seule ligne Animation dont la quantité est
-      // le nombre de groupes, et une seule ligne Préparation (jamais multipliée par les groupes).
+      // Regroupe par formation (et non par groupe) : une seule ligne récapitulative dont le nombre de
+      // groupes, les jours de préparation et les jours d'animation (déjà multipliés par le nb de groupes)
+      // reproduisent la structure du fichier Excel de référence.
       const parFormationId = {}
       for (const dl of Object.values(parLigne)) {
         if (!dl?.formation_id) continue
@@ -173,28 +198,21 @@ export default function Chiffrage() {
       const lignesFormations = []
       for (const { catalogue: cat, nbGroupes } of Object.values(parFormationId)) {
         if (!cat) continue
-        const dureeAnimation = cat.duree_h || 0
+        const joursPrep = arrondi2((cat.duree_prep_h || 0) / JOUR_H)
+        const joursAnimTotal = arrondi2(((cat.duree_h || 0) / JOUR_H) * nbGroupes)
+        const joursTotal = arrondi2(joursPrep + joursAnimTotal)
         lignesFormations.push({
           demande_id: demandeId,
-          libelle: `${cat.nom} — Animation (${dureeAnimation}h par groupe)`,
-          quantite: nbGroupes,
-          prix_unitaire: arrondi2((dureeAnimation / JOUR_H) * TARIF_JOUR_ANIMATION_PV),
-          prix_revient: arrondi2((dureeAnimation / JOUR_H) * TARIF_JOUR_PV_PR),
+          libelle: cat.nom,
+          quantite: 1,
+          jours_preparation: joursPrep,
+          nb_groupes: nbGroupes,
+          jours_animation_unitaire: joursAnimTotal,
+          prix_unitaire: arrondi2(joursPrep * TARIF_JOUR_PREP_PV + joursAnimTotal * TARIF_JOUR_ANIMATION_PV),
+          prix_revient: arrondi2(joursTotal * TARIF_JOUR_PV_PR),
           origine: 'planning',
           categorie: 'formation',
         })
-        const dureePrep = cat.duree_prep_h || 0
-        if (dureePrep > 0) {
-          lignesFormations.push({
-            demande_id: demandeId,
-            libelle: `${cat.nom} — Préparation (${dureePrep}h, une seule fois quel que soit le nombre de groupes)`,
-            quantite: 1,
-            prix_unitaire: arrondi2((dureePrep / JOUR_H) * TARIF_JOUR_PREP_PV),
-            prix_revient: arrondi2((dureePrep / JOUR_H) * TARIF_JOUR_PV_PR),
-            origine: 'planning',
-            categorie: 'formation',
-          })
-        }
       }
 
       // Nuits d'hôtel et repas déduits des JOURS DE FORMATION réels (pas des dates des blocs
@@ -293,7 +311,7 @@ export default function Chiffrage() {
 
       await chargerLignes(demandeId)
       setSucces(
-        `Devis généré : ${lignesFormations.length} ligne(s) de formation (animation + préparation), frais de déplacement ventilés par service. Vous pouvez tout ajuster ci-dessous.`,
+        `Devis généré : ${lignesFormations.length} formation(s), frais de déplacement ventilés par service. Vous pouvez tout ajuster ci-dessous.`,
       )
     } catch (err) {
       setMessage(err.message)
@@ -305,7 +323,7 @@ export default function Chiffrage() {
   async function ajouterLigneLibre(categorie) {
     const { data, error } = await supabase
       .from('devis_lignes')
-      .insert({ ...ligneVide(), demande_id: demandeId, categorie })
+      .insert({ ...ligneVide(categorie), demande_id: demandeId })
       .select('*')
       .single()
     if (error) {
@@ -319,9 +337,7 @@ export default function Chiffrage() {
     setLignes((prev) => prev.map((l) => (l.id === id ? { ...l, [champ]: valeur } : l)))
   }
 
-  async function sauvegarderLigne(id) {
-    const ligne = lignes.find((l) => l.id === id)
-    if (!ligne) return
+  async function persisterLigne(ligne) {
     await supabase
       .from('devis_lignes')
       .update({
@@ -330,8 +346,41 @@ export default function Chiffrage() {
         prix_unitaire: Number(ligne.prix_unitaire) || 0,
         prix_revient: Number(ligne.prix_revient) || 0,
         categorie: ligne.categorie,
+        jours_preparation: ligne.jours_preparation === '' || ligne.jours_preparation == null ? null : Number(ligne.jours_preparation),
+        nb_groupes: ligne.nb_groupes === '' || ligne.nb_groupes == null ? null : Number(ligne.nb_groupes),
+        jours_animation_unitaire:
+          ligne.jours_animation_unitaire === '' || ligne.jours_animation_unitaire == null
+            ? null
+            : Number(ligne.jours_animation_unitaire),
+        commentaires: ligne.commentaires || null,
       })
-      .eq('id', id)
+      .eq('id', ligne.id)
+  }
+
+  async function sauvegarderLigne(id) {
+    const ligne = lignes.find((l) => l.id === id)
+    if (!ligne) return
+    await persisterLigne(ligne)
+  }
+
+  // Pour les lignes "Formations" : jours de préparation et jours d'animation pilotent directement le
+  // PV et le PR (comme des formules dans le fichier Excel de référence) — recalculés à chaque saisie.
+  function sauvegarderChampFormation(id) {
+    setLignes((prev) =>
+      prev.map((l) => {
+        if (l.id !== id) return l
+        const joursPrep = Number(l.jours_preparation) || 0
+        const joursAnim = Number(l.jours_animation_unitaire) || 0
+        const joursTotal = joursPrep + joursAnim
+        const ligneMaj = {
+          ...l,
+          prix_unitaire: arrondi2(joursPrep * TARIF_JOUR_PREP_PV + joursAnim * TARIF_JOUR_ANIMATION_PV),
+          prix_revient: arrondi2(joursTotal * TARIF_JOUR_PV_PR),
+        }
+        persisterLigne(ligneMaj)
+        return ligneMaj
+      }),
+    )
   }
 
   async function supprimerLigne(id) {
@@ -339,13 +388,27 @@ export default function Chiffrage() {
     setLignes((prev) => prev.filter((l) => l.id !== id))
   }
 
+  function modifierResumeLocal(champ, valeur) {
+    setResume((prev) => ({ ...prev, [champ]: valeur }))
+  }
+
+  async function sauvegarderRemiseArrondi() {
+    await supabase
+      .from('demandes')
+      .update({
+        remise_pv: Number(resume?.remisePv) || 0,
+        remise_pr: Number(resume?.remisePr) || 0,
+        arrondi_pv: Number(resume?.arrondiPv) || 0,
+        arrondi_pr: Number(resume?.arrondiPr) || 0,
+      })
+      .eq('id', demandeId)
+  }
+
   function totaux(liste) {
     const pv = liste.reduce((s, l) => s + Number(l.quantite || 0) * Number(l.prix_unitaire || 0), 0)
     const pr = liste.reduce((s, l) => s + Number(l.quantite || 0) * Number(l.prix_revient || 0), 0)
-    return { pv, pr, marge: pv - pr, taux: pv > 0 ? ((pv - pr) / pv) * 100 : 0 }
+    return { pv, pr, marge: pv - pr, taux: margeTaux(pv, pr) }
   }
-
-  const totalGeneral = totaux(lignes)
 
   if (!demandeId) {
     return (
@@ -355,6 +418,43 @@ export default function Chiffrage() {
       </div>
     )
   }
+
+  // Récapitulatif financier — reproduit exactement la structure du fichier Excel de référence :
+  // formation animation / préparation séparées, puis les autres catégories, sous-total, remise, total, arrondi.
+  const lignesFormationsCat = lignes.filter((l) => l.categorie === 'formation')
+  let animPv = 0
+  let animPr = 0
+  let prepPv = 0
+  let prepPr = 0
+  for (const l of lignesFormationsCat) {
+    const joursPrep = Number(l.jours_preparation) || 0
+    const joursAnim = Number(l.jours_animation_unitaire) || 0
+    animPv += joursAnim * TARIF_JOUR_ANIMATION_PV
+    animPr += joursAnim * TARIF_JOUR_PV_PR
+    prepPv += joursPrep * TARIF_JOUR_PREP_PV
+    prepPr += joursPrep * TARIF_JOUR_PV_PR
+  }
+  const tAdmin = totaux(lignes.filter((l) => l.categorie === 'administratif'))
+  const tElearning = totaux(lignes.filter((l) => l.categorie === 'elearning'))
+  const tAscentline = totaux(lignes.filter((l) => l.categorie === 'ascentline'))
+  const tDeplacement = totaux(lignes.filter((l) => l.categorie === 'deplacement'))
+  const tAutre = totaux(lignes.filter((l) => l.categorie === 'autre'))
+
+  const lignesRecap = [
+    { libelle: 'FORMATION (animation)', pv: animPv, pr: animPr },
+    { libelle: 'FORMATION (préparation & évaluation)', pv: prepPv, pr: prepPr },
+    { libelle: 'ADMINISTRATIF', pv: tAdmin.pv, pr: tAdmin.pr },
+    { libelle: 'MODULES E-LEARNING', pv: tElearning.pv, pr: tElearning.pr },
+    { libelle: 'LICENCES ASCENTLINE', pv: tAscentline.pv, pr: tAscentline.pr },
+    { libelle: 'FRAIS DE DEPLACEMENTS', pv: tDeplacement.pv, pr: tDeplacement.pr },
+    { libelle: 'FRAIS DIVERS', pv: tAutre.pv, pr: tAutre.pr },
+  ]
+  const sousTotalPv = lignesRecap.reduce((s, l) => s + l.pv, 0)
+  const sousTotalPr = lignesRecap.reduce((s, l) => s + l.pr, 0)
+  const remisePv = Number(resume?.remisePv) || 0
+  const remisePr = Number(resume?.remisePr) || 0
+  const totalPv = sousTotalPv - remisePv
+  const totalPr = sousTotalPr - remisePr
 
   return (
     <div className="page page-large">
@@ -378,8 +478,8 @@ export default function Chiffrage() {
       </div>
       <p className="astuce">
         Ce bouton (re)calcule uniquement les lignes automatiques (formations, nuits, repas, heures de
-        déplacement) à partir du planning. Les lignes ajoutées à la main (administratif, licences
-        Ascentline...) ne sont jamais touchées.
+        déplacement) à partir du planning. Les lignes ajoutées à la main (administratif, e-learning,
+        licences Ascentline...) ne sont jamais touchées.
       </p>
 
       {message && <p className="message erreur">{message}</p>}
@@ -389,6 +489,146 @@ export default function Chiffrage() {
         const lignesCat = lignes.filter((l) => l.categorie === cat)
         if (cat === 'deplacement') lignesCat.sort(comparerLignesDeplacement)
         const t = totaux(lignesCat)
+
+        if (cat === 'formation') {
+          return (
+            <section key={cat} className="section-devis">
+              <h2>{CATEGORIE_LABELS[cat]}</h2>
+              {lignesCat.length === 0 ? (
+                <p className="astuce">Aucune ligne.</p>
+              ) : (
+                <div className="table-devis-scroll">
+                  <table className="table-devis">
+                    <thead>
+                      <tr>
+                        <th>Formation</th>
+                        <th>Jours prépa</th>
+                        <th>Nb groupes</th>
+                        <th>Jours animation</th>
+                        <th>Jours total</th>
+                        <th>PV HT</th>
+                        <th>PR HT</th>
+                        <th>Marge</th>
+                        <th>Commentaires</th>
+                        <th>Origine</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {lignesCat.map((l) => {
+                        const joursPrep = Number(l.jours_preparation) || 0
+                        const joursAnim = Number(l.jours_animation_unitaire) || 0
+                        const joursTotal = arrondi2(joursPrep + joursAnim)
+                        const pv = Number(l.prix_unitaire) || 0
+                        const pr = Number(l.prix_revient) || 0
+                        return (
+                          <tr key={l.id}>
+                            <td>
+                              <input
+                                type="text"
+                                className="input-libelle"
+                                value={l.libelle}
+                                onChange={(e) => modifierLigneLocal(l.id, 'libelle', e.target.value)}
+                                onBlur={() => sauvegarderLigne(l.id)}
+                              />
+                            </td>
+                            <td>
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.5"
+                                value={l.jours_preparation ?? 0}
+                                onChange={(e) => modifierLigneLocal(l.id, 'jours_preparation', e.target.value)}
+                                onBlur={() => sauvegarderChampFormation(l.id)}
+                              />
+                            </td>
+                            <td>
+                              <input
+                                type="number"
+                                min="1"
+                                value={l.nb_groupes ?? 1}
+                                onChange={(e) => modifierLigneLocal(l.id, 'nb_groupes', e.target.value)}
+                                onBlur={() => sauvegarderLigne(l.id)}
+                              />
+                            </td>
+                            <td>
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.5"
+                                value={l.jours_animation_unitaire ?? 0}
+                                onChange={(e) => modifierLigneLocal(l.id, 'jours_animation_unitaire', e.target.value)}
+                                onBlur={() => sauvegarderChampFormation(l.id)}
+                              />
+                            </td>
+                            <td>{joursTotal.toFixed(1)}</td>
+                            <td>
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                value={l.prix_unitaire}
+                                onChange={(e) => modifierLigneLocal(l.id, 'prix_unitaire', e.target.value)}
+                                onBlur={() => sauvegarderLigne(l.id)}
+                              />
+                            </td>
+                            <td>
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                value={l.prix_revient}
+                                onChange={(e) => modifierLigneLocal(l.id, 'prix_revient', e.target.value)}
+                                onBlur={() => sauvegarderLigne(l.id)}
+                              />
+                            </td>
+                            <td>{(pv - pr).toFixed(2)} €</td>
+                            <td>
+                              <input
+                                type="text"
+                                className="input-commentaires"
+                                value={l.commentaires || ''}
+                                onChange={(e) => modifierLigneLocal(l.id, 'commentaires', e.target.value)}
+                                onBlur={() => sauvegarderLigne(l.id)}
+                              />
+                            </td>
+                            <td>
+                              <span className={`badge-origine ${l.origine === 'planning' ? 'auto' : 'manuel'}`}>
+                                {l.origine === 'planning' ? 'Planning' : 'Manuel'}
+                              </span>
+                            </td>
+                            <td>
+                              <button type="button" onClick={() => supprimerLigne(l.id)}>×</button>
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                    <tfoot>
+                      <tr>
+                        <td><strong>Sous-total {CATEGORIE_LABELS[cat]}</strong></td>
+                        <td></td>
+                        <td></td>
+                        <td></td>
+                        <td></td>
+                        <td><strong>{t.pv.toFixed(2)} €</strong></td>
+                        <td><strong>{t.pr.toFixed(2)} €</strong></td>
+                        <td><strong>{t.marge.toFixed(2)} € ({t.taux.toFixed(0)}%)</strong></td>
+                        <td></td>
+                        <td></td>
+                        <td></td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              )}
+              <button type="button" onClick={() => ajouterLigneLibre(cat)}>
+                + Ajouter une formation
+              </button>
+            </section>
+          )
+        }
+
         return (
           <section key={cat} className="section-devis">
             <h2>{CATEGORIE_LABELS[cat]}</h2>
@@ -471,9 +711,7 @@ export default function Chiffrage() {
                   </tbody>
                   <tfoot>
                     <tr>
-                      <td>
-                        <strong>Sous-total {CATEGORIE_LABELS[cat]}</strong>
-                      </td>
+                      <td><strong>Sous-total {CATEGORIE_LABELS[cat]}</strong></td>
                       <td></td>
                       <td></td>
                       <td></td>
@@ -522,64 +760,82 @@ export default function Chiffrage() {
           </table>
         </div>
 
-        {resume && resume.formations.length > 0 && (
-          <div className="table-devis-scroll">
-            <table className="table-devis">
-              <thead>
-                <tr>
-                  <th>Formation</th>
-                  <th>Groupe</th>
-                  <th>Participants</th>
-                </tr>
-              </thead>
-              <tbody>
-                {resume.formations.map((f, i) => (
-                  <tr key={i}>
-                    <td>{f.formations_catalogue?.nom}</td>
-                    <td>{f.groupe || '—'}</td>
-                    <td>{f.nb_participants || 1}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-
         <div className="table-devis-scroll">
-          <table className="table-devis">
+          <table className="table-devis table-recap-financier">
             <thead>
               <tr>
-                <th>Catégorie</th>
-                <th>Total PV HT</th>
-                <th>Total PR HT</th>
+                <th>Libellé</th>
+                <th>PV HT</th>
+                <th>PR HT</th>
                 <th>Marge</th>
-                <th>Taux</th>
               </tr>
             </thead>
             <tbody>
-              {CATEGORIES.map((cat) => {
-                const t = totaux(lignes.filter((l) => l.categorie === cat))
-                if (t.pv === 0 && t.pr === 0) return null
-                return (
-                  <tr key={cat}>
-                    <td>{CATEGORIE_LABELS[cat]}</td>
-                    <td>{t.pv.toFixed(2)} €</td>
-                    <td>{t.pr.toFixed(2)} €</td>
-                    <td>{t.marge.toFixed(2)} €</td>
-                    <td>{t.taux.toFixed(0)}%</td>
-                  </tr>
-                )
-              })}
-            </tbody>
-            <tfoot>
-              <tr>
-                <td><strong>Total général</strong></td>
-                <td><strong>{totalGeneral.pv.toFixed(2)} €</strong></td>
-                <td><strong>{totalGeneral.pr.toFixed(2)} €</strong></td>
-                <td><strong>{totalGeneral.marge.toFixed(2)} €</strong></td>
-                <td><strong>{totalGeneral.taux.toFixed(0)}%</strong></td>
+              {lignesRecap.map((l) => (
+                <tr key={l.libelle}>
+                  <td>{l.libelle}</td>
+                  <td>{l.pv.toFixed(2)} €</td>
+                  <td>{l.pr.toFixed(2)} €</td>
+                  <td>{margeTaux(l.pv, l.pr).toFixed(0)}%</td>
+                </tr>
+              ))}
+              <tr className="ligne-forte">
+                <td><strong>SOUS-TOTAL</strong></td>
+                <td><strong>{sousTotalPv.toFixed(2)} €</strong></td>
+                <td><strong>{sousTotalPr.toFixed(2)} €</strong></td>
+                <td><strong>{margeTaux(sousTotalPv, sousTotalPr).toFixed(0)}%</strong></td>
               </tr>
-            </tfoot>
+              <tr>
+                <td>REMISE</td>
+                <td>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={resume?.remisePv ?? 0}
+                    onChange={(e) => modifierResumeLocal('remisePv', e.target.value)}
+                    onBlur={sauvegarderRemiseArrondi}
+                  />
+                </td>
+                <td>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={resume?.remisePr ?? 0}
+                    onChange={(e) => modifierResumeLocal('remisePr', e.target.value)}
+                    onBlur={sauvegarderRemiseArrondi}
+                  />
+                </td>
+                <td></td>
+              </tr>
+              <tr className="ligne-forte">
+                <td><strong>TOTAL</strong></td>
+                <td><strong>{totalPv.toFixed(2)} €</strong></td>
+                <td><strong>{totalPr.toFixed(2)} €</strong></td>
+                <td><strong>{margeTaux(totalPv, totalPr).toFixed(0)}%</strong></td>
+              </tr>
+              <tr>
+                <td>ARRONDI</td>
+                <td>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={resume?.arrondiPv ?? 0}
+                    onChange={(e) => modifierResumeLocal('arrondiPv', e.target.value)}
+                    onBlur={sauvegarderRemiseArrondi}
+                  />
+                </td>
+                <td>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={resume?.arrondiPr ?? 0}
+                    onChange={(e) => modifierResumeLocal('arrondiPr', e.target.value)}
+                    onBlur={sauvegarderRemiseArrondi}
+                  />
+                </td>
+                <td></td>
+              </tr>
+            </tbody>
           </table>
         </div>
       </section>

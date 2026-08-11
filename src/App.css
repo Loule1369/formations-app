@@ -344,6 +344,15 @@
   min-width: 420px;
 }
 
+.table-devis .input-commentaires {
+  min-width: 180px;
+}
+
+.table-recap-financier .ligne-forte td {
+  border-top: 2px solid #ccc;
+  background: #fafafa;
+}
+
 .table-devis tfoot td {
   border-top: 2px solid #ccc;
   border-bottom: none;

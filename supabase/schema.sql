@@ -49,6 +49,10 @@ create table demandes (
     check (statut in ('besoin_exprime', 'devis_envoye', 'valide', 'saisi_queoval', 'termine')),
   date_creation date not null default current_date,
   notes text,
+  remise_pv numeric not null default 0,
+  remise_pr numeric not null default 0,
+  arrondi_pv numeric,
+  arrondi_pr numeric,
   created_at timestamptz not null default now()
 );
 
@@ -93,6 +97,10 @@ create table devis_lignes (
   prix_revient numeric not null default 0,
   categorie text not null default 'autre',
   origine text,
+  jours_preparation numeric,
+  nb_groupes numeric,
+  jours_animation_unitaire numeric,
+  commentaires text,
   created_at timestamptz not null default now()
 );
 
