@@ -324,8 +324,10 @@ export default function Planning() {
     await synchroniserDeplacements(scenarioIdCible, demandeIdCible)
   }
 
-  // Recalcule entièrement les blocs "Déplacement" (avant/après chaque mission) à partir
-  // des blocs "Formation" actuels : un aller la veille du 1er jour, un retour le soir du dernier jour.
+  // Recalcule les blocs "Déplacement" (avant/après chaque mission) à partir des blocs "Formation"
+  // actuels : un aller la veille du 1er jour, un retour le soir du dernier jour. Un bloc déplacement
+  // que le chef de projet a ajusté à la main (modifie_manuellement) n'est jamais recalculé/écrasé,
+  // tant que la mission dont il dépend existe toujours à peu près à la même date.
   async function synchroniserDeplacements(scenarioIdCible, demandeIdCible) {
     const { data: formationsActuelles } = await supabase
       .from('creneaux')
@@ -334,7 +336,16 @@ export default function Planning() {
       .eq('type', 'formation')
       .order('date')
 
-    await supabase.from('creneaux').delete().eq('scenario_id', scenarioIdCible).eq('type', 'deplacement')
+    const { data: deplacementsExistants } = await supabase
+      .from('creneaux')
+      .select('id, date, formateur_id, modifie_manuellement')
+      .eq('scenario_id', scenarioIdCible)
+      .eq('type', 'deplacement')
+
+    const cle = (formateurId, date) => `${formateurId}|${date}`
+    const clesManuelles = new Set(
+      (deplacementsExistants || []).filter((d) => d.modifie_manuellement).map((d) => cle(d.formateur_id, d.date)),
+    )
 
     const parFormateur = {}
     for (const bloc of formationsActuelles || []) {
@@ -342,6 +353,7 @@ export default function Planning() {
       parFormateur[bloc.formateur_id].push(bloc)
     }
 
+    const clesAttendues = new Set()
     const nouveauxDeplacements = []
     for (const [formateurId, blocs] of Object.entries(parFormateur)) {
       const tri = [...blocs].sort((a, b) => a.date.localeCompare(b.date))
@@ -359,29 +371,50 @@ export default function Planning() {
               heure_debut: decimalEnHeure(WINDOW_END - DUREE_DEPLACEMENT),
               heure_fin: decimalEnHeure(WINDOW_END),
             }
-        nouveauxDeplacements.push({
-          demande_id: demandeIdCible,
-          demande_ligne_id: null,
-          scenario_id: scenarioIdCible,
-          formateur_id: formateurId,
-          type: 'deplacement',
-          ...arrivee,
-        })
+        clesAttendues.add(cle(formateurId, arrivee.date))
+        if (!clesManuelles.has(cle(formateurId, arrivee.date))) {
+          nouveauxDeplacements.push({
+            demande_id: demandeIdCible,
+            demande_ligne_id: null,
+            scenario_id: scenarioIdCible,
+            formateur_id: formateurId,
+            type: 'deplacement',
+            ...arrivee,
+          })
+        }
 
         const blocsDernierJour = tri.filter((b) => b.date === voyage.fin)
         const finMax = Math.max(...blocsDernierJour.map((b) => heureEnDecimal(b.heure_fin)))
         const debutRetour = Math.max(finMax, WINDOW_END - DUREE_DEPLACEMENT)
-        nouveauxDeplacements.push({
-          demande_id: demandeIdCible,
-          demande_ligne_id: null,
-          scenario_id: scenarioIdCible,
-          formateur_id: formateurId,
-          type: 'deplacement',
+        const depart = {
           date: voyage.fin,
           heure_debut: decimalEnHeure(debutRetour),
           heure_fin: decimalEnHeure(Math.min(debutRetour + DUREE_DEPLACEMENT, WINDOW_END)),
-        })
+        }
+        clesAttendues.add(cle(formateurId, depart.date))
+        if (!clesManuelles.has(cle(formateurId, depart.date))) {
+          nouveauxDeplacements.push({
+            demande_id: demandeIdCible,
+            demande_ligne_id: null,
+            scenario_id: scenarioIdCible,
+            formateur_id: formateurId,
+            type: 'deplacement',
+            ...depart,
+          })
+        }
       }
+    }
+
+    const idsAConserver = new Set(
+      (deplacementsExistants || [])
+        .filter((d) => d.modifie_manuellement && clesAttendues.has(cle(d.formateur_id, d.date)))
+        .map((d) => d.id),
+    )
+    const idsASupprimer = (deplacementsExistants || [])
+      .filter((d) => !idsAConserver.has(d.id))
+      .map((d) => d.id)
+    if (idsASupprimer.length > 0) {
+      await supabase.from('creneaux').delete().in('id', idsASupprimer)
     }
     if (nouveauxDeplacements.length > 0) {
       await supabase.from('creneaux').insert(nouveauxDeplacements)
@@ -635,7 +668,12 @@ export default function Planning() {
 
     await supabase
       .from('creneaux')
-      .update({ date: nouvelleDate, heure_debut: nouvelleHeureDebut, heure_fin: nouvelleHeureFin })
+      .update({
+        date: nouvelleDate,
+        heure_debut: nouvelleHeureDebut,
+        heure_fin: nouvelleHeureFin,
+        ...(creneau.type === 'deplacement' ? { modifie_manuellement: true } : {}),
+      })
       .eq('id', creneau.id)
 
     if (creneau.type === 'formation') await finaliserMutation()
@@ -666,7 +704,13 @@ export default function Planning() {
       return
     }
 
-    await supabase.from('creneaux').update({ heure_fin: nouvelleHeureFin }).eq('id', creneau.id)
+    await supabase
+      .from('creneaux')
+      .update({
+        heure_fin: nouvelleHeureFin,
+        ...(creneau.type === 'deplacement' ? { modifie_manuellement: true } : {}),
+      })
+      .eq('id', creneau.id)
     await finaliserMutation()
   }
 
@@ -963,7 +1007,7 @@ export default function Planning() {
                       height: pos.height,
                       ...(estFormation ? { background: couleur } : { borderColor: couleur }),
                     }}
-                    onMouseDown={estFormation ? (e) => demarrerGlisser(e, c, pos) : undefined}
+                    onMouseDown={(e) => demarrerGlisser(e, c, pos)}
                   >
                     {estFormation && (
                       <button
@@ -1004,16 +1048,18 @@ export default function Planning() {
                       <>
                         <div className="planning-bloc-titre">Déplacement — {nomFormateur(c.formateur_id)}</div>
                         <div className="planning-bloc-heures">
-                          {c.heure_debut.slice(0, 5)}–{c.heure_fin.slice(0, 5)}
+                          {c.heure_debut.slice(0, 5)}–
+                          {(redimensionnementEnCours?.id === c.id
+                            ? redimensionnementEnCours.heureFin
+                            : c.heure_fin
+                          ).slice(0, 5)}
                         </div>
                       </>
                     )}
-                    {estFormation && (
-                      <div
-                        className="planning-bloc-poignee"
-                        onMouseDown={(e) => demarrerRedimensionner(e, c, pos)}
-                      />
-                    )}
+                    <div
+                      className="planning-bloc-poignee"
+                      onMouseDown={(e) => demarrerRedimensionner(e, c, pos)}
+                    />
                   </div>
                 )
               })}

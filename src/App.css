@@ -255,7 +255,7 @@
 }
 
 .planning-bloc.deplacement {
-  cursor: default;
+  cursor: grab;
   background: #ffffff;
   color: #333;
   border: 2px solid;

@@ -79,6 +79,7 @@ create table creneaux (
   heure_debut time not null,
   heure_fin time not null,
   notes text,
+  modifie_manuellement boolean not null default false,
   created_at timestamptz not null default now()
 );
 

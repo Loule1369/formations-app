@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabaseClient'
-import { grouperVoyages } from '../lib/dates'
+import { grouperVoyages, dureeHeures } from '../lib/dates'
 import { useProjetActif } from '../lib/ProjetActifContext'
 
 // Prix de vente / prix de revient HT (source : "2026_Outil de chiffrage des offres de formation.xlsx", feuille "Autres tarifs").
@@ -8,6 +8,11 @@ const TARIF_NUIT_HOTEL_PV = 135
 const TARIF_NUIT_HOTEL_PR = 120
 const TARIF_REPAS_PV = 30
 const TARIF_REPAS_PR = 25
+// Taux horaire (source : même fichier, coin "Taux Horaires" de la feuille ACTIF) — le prix de vente
+// est unique, le coût de revient dépend du service du formateur.
+const TARIF_HORAIRE_PV = 150
+const TARIF_HORAIRE_PR_PAR_SERVICE = { FORDOC: 79.68, SAV: 84.52, DIH: 68.65, INSTALL: 81.01 }
+const TARIF_HORAIRE_PR_DEFAUT = 79.68
 
 const CATEGORIES = ['formation', 'deplacement', 'administratif', 'ascentline', 'autre']
 const CATEGORIE_LABELS = {
@@ -92,10 +97,11 @@ export default function Chiffrage() {
     try {
       const { data: creneaux } = await supabase
         .from('creneaux')
-        .select('type, date, formateur_id, demande_ligne_id, demande_lignes(groupe, formations_catalogue(nom, prix, prix_revient))')
+        .select('type, date, heure_debut, heure_fin, formateur_id, demande_ligne_id, demande_lignes(groupe, formations_catalogue(nom, prix, prix_revient))')
         .eq('scenario_id', scenarioId)
 
       const formations = (creneaux || []).filter((c) => c.type === 'formation')
+      const deplacements = (creneaux || []).filter((c) => c.type === 'deplacement')
 
       // Une ligne par formation demandée (regroupe les blocs matin/après-midi/plusieurs jours).
       const parLigne = {}
@@ -169,6 +175,26 @@ export default function Chiffrage() {
         }
       }
 
+      // Heures de déplacement facturées : durée réelle des blocs "Déplacement" (ajustables à la main
+      // dans le Planning pour refléter le vrai temps de trajet), ventilées par service du formateur.
+      const heuresDeplacementParService = {}
+      for (const c of deplacements) {
+        const service = serviceDuFormateur(c.formateur_id)
+        heuresDeplacementParService[service] = (heuresDeplacementParService[service] || 0) + dureeHeures(c.heure_debut, c.heure_fin)
+      }
+      for (const [service, heures] of Object.entries(heuresDeplacementParService)) {
+        if (heures <= 0) continue
+        lignesFrais.push({
+          demande_id: demandeId,
+          libelle: `Heures de déplacement — ${service}`,
+          quantite: Math.round(heures * 2) / 2,
+          prix_unitaire: TARIF_HORAIRE_PV,
+          prix_revient: TARIF_HORAIRE_PR_PAR_SERVICE[service] || TARIF_HORAIRE_PR_DEFAUT,
+          origine: 'planning',
+          categorie: 'deplacement',
+        })
+      }
+
       await supabase.from('devis_lignes').delete().eq('demande_id', demandeId).eq('origine', 'planning')
       const nouvellesLignes = [...lignesFormations, ...lignesFrais]
       if (nouvellesLignes.length > 0) {
@@ -176,7 +202,7 @@ export default function Chiffrage() {
       }
       await chargerLignes(demandeId)
       setSucces(
-        `Devis généré : ${lignesFormations.length} formation(s), frais de déplacement ventilés par service. Vous pouvez tout ajuster ci-dessous.`,
+        `Devis généré : ${lignesFormations.length} formation(s), frais de déplacement (nuits, repas, heures) ventilés par service. Vous pouvez tout ajuster ci-dessous.`,
       )
     } catch (err) {
       setMessage(err.message)
