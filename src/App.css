@@ -369,6 +369,21 @@
   padding-bottom: 0.15rem;
 }
 
+.ligne-categorie td {
+  padding-top: 0.5rem;
+  padding-bottom: 0.2rem;
+  border-bottom: 2px solid #ccc;
+  font-weight: 600;
+  color: #2e5c8a;
+  background: #f4f7fb;
+}
+
+.ligne-sous-total td {
+  border-top: 1px solid #ccc;
+  border-bottom: 2px solid #eee;
+  background: #fafafa;
+}
+
 .bouton-lien {
   background: none;
   border: none;

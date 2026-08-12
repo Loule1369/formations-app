@@ -246,18 +246,16 @@ export default function Planning() {
     return () => window.removeEventListener('keydown', surTouche)
   }, [creneaux, blocSelectionneId, scenarioId, demandeId])
 
-  // Ferme le menu contextuel dès qu'on clique ailleurs (le menu lui-même arrête la propagation).
+  // Ferme le menu contextuel dès qu'on clique ailleurs (le menu lui-même arrête la propagation du
+  // mousedown). Un clic droit ailleurs déclenche aussi un mousedown avant le contextmenu, donc ce seul
+  // listener suffit à fermer l'ancien menu avant que le nouveau ne s'ouvre.
   useEffect(() => {
     if (!menuContextuel) return
     function fermer() {
       setMenuContextuel(null)
     }
     window.addEventListener('mousedown', fermer)
-    window.addEventListener('contextmenu', fermer)
-    return () => {
-      window.removeEventListener('mousedown', fermer)
-      window.removeEventListener('contextmenu', fermer)
-    }
+    return () => window.removeEventListener('mousedown', fermer)
   }, [menuContextuel])
 
   useEffect(() => {
@@ -999,6 +997,9 @@ export default function Planning() {
   }
 
   function demarrerRedimensionner(e, c, pos) {
+    // Même garde que demarrerGlisser : un clic droit sur la poignée (fine bande en bas du bloc) ne
+    // doit pas non plus avaler l'événement contextmenu.
+    if (e.button !== 0) return
     e.stopPropagation()
     e.preventDefault()
     const node = blocRefs.current[c.id]

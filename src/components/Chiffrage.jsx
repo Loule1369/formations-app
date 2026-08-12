@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { supabase } from '../lib/supabaseClient'
 import { grouperVoyages, dureeHeures } from '../lib/dates'
 import { useProjetActif } from '../lib/ProjetActifContext'
@@ -48,7 +48,15 @@ function ligneVide(categorie) {
       commentaires: '',
     }
   }
-  return { libelle: 'Nouvelle ligne', quantite: 1, prix_unitaire: 0, prix_revient: 0, origine: null, categorie }
+  return {
+    libelle: 'Nouvelle ligne',
+    quantite: 1,
+    prix_unitaire: 0,
+    prix_revient: 0,
+    origine: null,
+    categorie,
+    commentaires: '',
+  }
 }
 
 // FORDOC (sous-traitant) toujours en tête des frais de déplacement, les services internes ensuite.
@@ -58,6 +66,23 @@ function comparerLignesDeplacement(a, b) {
   if (aFordoc !== bFordoc) return aFordoc - bFordoc
   return a.libelle.localeCompare(b.libelle)
 }
+
+// Modules e-learning du catalogue de référence (aucune heure/jour associé : contenu autonome, tarif
+// à saisir manuellement) — juste une liste pour aller plus vite, pas de lien avec le Planning.
+const MODULES_ELEARNING = [
+  "CONVOYEURS INTELIS : Comprendre le fonctionnement (e-learning)",
+  "XPTS : Comprendre le fonctionnement (e-learning)",
+  "JIVARO : S'approprier le fonctionnement (e-learning)",
+  'ODATIO WMS : Ergonomie (e-learning)',
+  'ODATIO WMS : Règles métier (e-learning)',
+  'HYPERVISION : Piloter les flux (e-learning)',
+  "Les coulisses d'un entrepôt : Découvrir les flux logistiques (e-learning)",
+  'Former vos équipes : Les bases de la pédagogie (e-learning)',
+  'XPTS : Intervenir en sécurité (e-learning)',
+  'Designer de documents (LM Report) (e-learning)',
+  'BO : Prise en main (e-learning)',
+  "CONSOMMABLES : Comprendre le système d'encollage (e-learning)",
+]
 
 export default function Chiffrage() {
   const { demandeId, clientNom } = useProjetActif()
@@ -359,6 +384,26 @@ export default function Chiffrage() {
     setLignes((prev) => [...prev, data])
   }
 
+  // Ajoute un module e-learning choisi dans la liste de référence (tarif à saisir à la main, aucune
+  // heure/jour associé), ou une ligne texte libre.
+  async function ajouterLigneElearning(nom) {
+    if (!nom) return
+    if (nom === 'libre') {
+      await ajouterLigneLibre('elearning')
+      return
+    }
+    const { data, error } = await supabase
+      .from('devis_lignes')
+      .insert({ ...ligneVide('elearning'), libelle: nom, demande_id: demandeId })
+      .select('*')
+      .single()
+    if (error) {
+      setMessage(error.message)
+      return
+    }
+    setLignes((prev) => [...prev, data])
+  }
+
   // Toute saisie manuelle (même sur une ligne générée depuis le planning) bascule l'origine sur
   // "Manuel" : le badge Origine doit refléter si la valeur AFFICHÉE vient du planning ou a été touchée
   // à la main, pas seulement comment la ligne a été créée. Ça la protège aussi d'un futur "Régénérer".
@@ -520,51 +565,57 @@ export default function Chiffrage() {
       {message && <p className="message erreur">{message}</p>}
       {succes && <p className="message succes">{succes}</p>}
 
-      {CATEGORIES.map((cat) => {
-        const lignesCat = lignes.filter((l) => l.categorie === cat)
-        if (cat === 'deplacement') lignesCat.sort(comparerLignesDeplacement)
-        const t = totaux(lignesCat)
-
-        if (cat === 'formation') {
-          return (
-            <section key={cat} className="section-devis">
-              <h2>{CATEGORIE_LABELS[cat]}</h2>
-              <div className="table-devis-scroll">
-                <table className="table-devis">
-                  <thead>
-                    <tr>
-                      <th>Formation</th>
-                      <th>Jours prépa</th>
-                      <th>Nb groupes</th>
-                      <th>Jours animation</th>
-                      <th>Jours total</th>
-                      <th>PV HT</th>
-                      <th>PR HT</th>
-                      <th>Marge</th>
-                      <th>Commentaires</th>
-                      <th>Origine</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                      {lignesCat.map((l) => {
-                        const joursPrep = Number(l.jours_preparation) || 0
-                        const joursAnim = Number(l.jours_animation_unitaire) || 0
-                        const nbGroupes = Number(l.nb_groupes) || 0
-                        const joursTotal = arrondi2(joursPrep + joursAnim * nbGroupes)
-                        const pv = Number(l.prix_unitaire) || 0
-                        const pr = Number(l.prix_revient) || 0
-                        return (
-                          <tr key={l.id}>
-                            <td>
-                              <input
-                                type="text"
-                                className="input-libelle"
-                                value={l.libelle}
-                                onChange={(e) => modifierLigneLocal(l.id, 'libelle', e.target.value)}
-                                onBlur={() => sauvegarderLigne(l.id)}
-                              />
-                            </td>
+      <div className="table-devis-scroll">
+        <table className="table-devis">
+          <thead>
+            <tr>
+              <th>Libellé</th>
+              <th>Jours prépa</th>
+              <th>Nb groupes</th>
+              <th>Jours animation</th>
+              <th>Jours total</th>
+              <th>Qté</th>
+              <th>PV HT</th>
+              <th>PR HT</th>
+              <th>Marge</th>
+              <th>Commentaires</th>
+              <th>Origine</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {CATEGORIES.map((cat) => {
+              const lignesCat = lignes.filter((l) => l.categorie === cat)
+              if (cat === 'deplacement') lignesCat.sort(comparerLignesDeplacement)
+              const estFormation = cat === 'formation'
+              const t = totaux(lignesCat)
+              return (
+                <Fragment key={cat}>
+                  <tr className="ligne-categorie">
+                    <td colSpan={12}>{CATEGORIE_LABELS[cat]}</td>
+                  </tr>
+                  {lignesCat.map((l) => {
+                    const joursPrep = Number(l.jours_preparation) || 0
+                    const joursAnim = Number(l.jours_animation_unitaire) || 0
+                    const nbGroupes = Number(l.nb_groupes) || 0
+                    const joursTotal = arrondi2(joursPrep + joursAnim * nbGroupes)
+                    const pv = Number(l.prix_unitaire) || 0
+                    const pr = Number(l.prix_revient) || 0
+                    const totalLignePV = l.categorie === 'formation' ? pv : Number(l.quantite || 0) * pv
+                    const totalLignePR = l.categorie === 'formation' ? pr : Number(l.quantite || 0) * pr
+                    return (
+                      <tr key={l.id}>
+                        <td>
+                          <input
+                            type="text"
+                            className="input-libelle"
+                            value={l.libelle}
+                            onChange={(e) => modifierLigneLocal(l.id, 'libelle', e.target.value)}
+                            onBlur={() => sauvegarderLigne(l.id)}
+                          />
+                        </td>
+                        {l.categorie === 'formation' ? (
+                          <>
                             <td>
                               <input
                                 type="number"
@@ -595,174 +646,106 @@ export default function Chiffrage() {
                               />
                             </td>
                             <td>{joursTotal.toFixed(1)}</td>
+                            <td>—</td>
+                          </>
+                        ) : (
+                          <>
+                            <td>—</td>
+                            <td>—</td>
+                            <td>—</td>
+                            <td>—</td>
                             <td>
                               <input
                                 type="number"
                                 min="0"
-                                step="0.01"
-                                value={l.prix_unitaire}
-                                onChange={(e) => modifierLigneLocal(l.id, 'prix_unitaire', e.target.value)}
+                                value={l.quantite}
+                                onChange={(e) => modifierLigneLocal(l.id, 'quantite', e.target.value)}
                                 onBlur={() => sauvegarderLigne(l.id)}
                               />
                             </td>
-                            <td>
-                              <input
-                                type="number"
-                                min="0"
-                                step="0.01"
-                                value={l.prix_revient}
-                                onChange={(e) => modifierLigneLocal(l.id, 'prix_revient', e.target.value)}
-                                onBlur={() => sauvegarderLigne(l.id)}
-                              />
-                            </td>
-                            <td>{(pv - pr).toFixed(2)} €</td>
-                            <td>
-                              <input
-                                type="text"
-                                className="input-commentaires"
-                                value={l.commentaires || ''}
-                                onChange={(e) => modifierLigneLocal(l.id, 'commentaires', e.target.value)}
-                                onBlur={() => sauvegarderLigne(l.id)}
-                              />
-                            </td>
-                            <td>
-                              <span className={`badge-origine ${l.origine === 'planning' ? 'auto' : 'manuel'}`}>
-                                {l.origine === 'planning' ? 'Planning' : 'Manuel'}
-                              </span>
-                            </td>
-                            <td>
-                              <button type="button" onClick={() => supprimerLigne(l.id)}>×</button>
-                            </td>
-                          </tr>
-                        )
-                      })}
-                      <tr className="ligne-ajout">
-                        <td colSpan={11}>
-                          <select
-                            className="select-ajout"
-                            value=""
-                            onChange={(e) => ajouterFormationCatalogue(e.target.value)}
-                          >
-                            <option value="" disabled>+ Ajouter une formation…</option>
-                            {catalogue.map((f) => (
-                              <option key={f.id} value={f.id}>{f.nom}</option>
-                            ))}
-                            <option value="libre">Autre (texte libre)</option>
-                          </select>
+                          </>
+                        )}
+                        <td>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={l.prix_unitaire}
+                            onChange={(e) => modifierLigneLocal(l.id, 'prix_unitaire', e.target.value)}
+                            onBlur={() => sauvegarderLigne(l.id)}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={l.prix_revient}
+                            onChange={(e) => modifierLigneLocal(l.id, 'prix_revient', e.target.value)}
+                            onBlur={() => sauvegarderLigne(l.id)}
+                          />
+                        </td>
+                        <td>{(totalLignePV - totalLignePR).toFixed(2)} €</td>
+                        <td>
+                          <input
+                            type="text"
+                            className="input-commentaires"
+                            value={l.commentaires || ''}
+                            onChange={(e) => modifierLigneLocal(l.id, 'commentaires', e.target.value)}
+                            onBlur={() => sauvegarderLigne(l.id)}
+                          />
+                        </td>
+                        <td>
+                          <span className={`badge-origine ${l.origine === 'planning' ? 'auto' : 'manuel'}`}>
+                            {l.origine === 'planning' ? 'Planning' : 'Manuel'}
+                          </span>
+                        </td>
+                        <td>
+                          <button type="button" onClick={() => supprimerLigne(l.id)}>×</button>
                         </td>
                       </tr>
-                    </tbody>
-                    {lignesCat.length > 0 && (
-                      <tfoot>
-                        <tr>
-                          <td><strong>Sous-total {CATEGORIE_LABELS[cat]}</strong></td>
-                          <td></td>
-                          <td></td>
-                          <td></td>
-                          <td></td>
-                          <td><strong>{t.pv.toFixed(2)} €</strong></td>
-                          <td><strong>{t.pr.toFixed(2)} €</strong></td>
-                          <td><strong>{t.marge.toFixed(2)} € ({t.taux.toFixed(0)}%)</strong></td>
-                          <td></td>
-                          <td></td>
-                          <td></td>
-                        </tr>
-                      </tfoot>
-                    )}
-                </table>
-              </div>
-            </section>
-          )
-        }
-
-        return (
-          <section key={cat} className="section-devis">
-            <h2>{CATEGORIE_LABELS[cat]}</h2>
-            <div className="table-devis-scroll">
-              <table className="table-devis">
-                <thead>
-                  <tr>
-                    <th>Libellé</th>
-                    <th>Qté</th>
-                    <th>PV unitaire HT</th>
-                    <th>PR unitaire HT</th>
-                    <th>Total PV HT</th>
-                    <th>Total PR HT</th>
-                    <th>Marge</th>
-                    <th>Origine</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                    {lignesCat.map((l) => {
-                      const totalLignePV = Number(l.quantite || 0) * Number(l.prix_unitaire || 0)
-                      const totalLignePR = Number(l.quantite || 0) * Number(l.prix_revient || 0)
-                      return (
-                        <tr key={l.id}>
-                          <td>
-                            <input
-                              type="text"
-                              className="input-libelle"
-                              value={l.libelle}
-                              onChange={(e) => modifierLigneLocal(l.id, 'libelle', e.target.value)}
-                              onBlur={() => sauvegarderLigne(l.id)}
-                            />
-                          </td>
-                          <td>
-                            <input
-                              type="number"
-                              min="0"
-                              value={l.quantite}
-                              onChange={(e) => modifierLigneLocal(l.id, 'quantite', e.target.value)}
-                              onBlur={() => sauvegarderLigne(l.id)}
-                            />
-                          </td>
-                          <td>
-                            <input
-                              type="number"
-                              min="0"
-                              step="0.01"
-                              value={l.prix_unitaire}
-                              onChange={(e) => modifierLigneLocal(l.id, 'prix_unitaire', e.target.value)}
-                              onBlur={() => sauvegarderLigne(l.id)}
-                            />
-                          </td>
-                          <td>
-                            <input
-                              type="number"
-                              min="0"
-                              step="0.01"
-                              value={l.prix_revient}
-                              onChange={(e) => modifierLigneLocal(l.id, 'prix_revient', e.target.value)}
-                              onBlur={() => sauvegarderLigne(l.id)}
-                            />
-                          </td>
-                          <td>{totalLignePV.toFixed(2)} €</td>
-                          <td>{totalLignePR.toFixed(2)} €</td>
-                          <td>{(totalLignePV - totalLignePR).toFixed(2)} €</td>
-                          <td>
-                            <span className={`badge-origine ${l.origine === 'planning' ? 'auto' : 'manuel'}`}>
-                              {l.origine === 'planning' ? 'Planning' : 'Manuel'}
-                            </span>
-                          </td>
-                          <td>
-                            <button type="button" onClick={() => supprimerLigne(l.id)}>×</button>
-                          </td>
-                        </tr>
-                      )
-                    })}
+                    )
+                  })}
                   <tr className="ligne-ajout">
-                    <td colSpan={9}>
-                      <button type="button" className="bouton-lien" onClick={() => ajouterLigneLibre(cat)}>
-                        + Ajouter une ligne « {CATEGORIE_LABELS[cat]} »
-                      </button>
+                    <td colSpan={12}>
+                      {estFormation && (
+                        <select
+                          className="select-ajout"
+                          value=""
+                          onChange={(e) => ajouterFormationCatalogue(e.target.value)}
+                        >
+                          <option value="" disabled>+ Ajouter une formation…</option>
+                          {catalogue.map((f) => (
+                            <option key={f.id} value={f.id}>{f.nom}</option>
+                          ))}
+                          <option value="libre">Autre (texte libre)</option>
+                        </select>
+                      )}
+                      {cat === 'elearning' && (
+                        <select
+                          className="select-ajout"
+                          value=""
+                          onChange={(e) => ajouterLigneElearning(e.target.value)}
+                        >
+                          <option value="" disabled>+ Ajouter un module e-learning…</option>
+                          {MODULES_ELEARNING.map((nom) => (
+                            <option key={nom} value={nom}>{nom}</option>
+                          ))}
+                          <option value="libre">Autre (texte libre)</option>
+                        </select>
+                      )}
+                      {!estFormation && cat !== 'elearning' && (
+                        <button type="button" className="bouton-lien" onClick={() => ajouterLigneLibre(cat)}>
+                          + Ajouter une ligne « {CATEGORIE_LABELS[cat]} »
+                        </button>
+                      )}
                     </td>
                   </tr>
-                </tbody>
-                {lignesCat.length > 0 && (
-                  <tfoot>
-                    <tr>
+                  {lignesCat.length > 0 && (
+                    <tr className="ligne-sous-total">
                       <td><strong>Sous-total {CATEGORIE_LABELS[cat]}</strong></td>
+                      <td></td>
+                      <td></td>
                       <td></td>
                       <td></td>
                       <td></td>
@@ -771,14 +754,15 @@ export default function Chiffrage() {
                       <td><strong>{t.marge.toFixed(2)} € ({t.taux.toFixed(0)}%)</strong></td>
                       <td></td>
                       <td></td>
+                      <td></td>
                     </tr>
-                  </tfoot>
-                )}
-              </table>
-            </div>
-          </section>
-        )
-      })}
+                  )}
+                </Fragment>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
 
       <section className="section-devis">
         <h2>Récapitulatif du projet</h2>
