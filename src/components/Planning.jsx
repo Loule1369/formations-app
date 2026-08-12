@@ -224,29 +224,17 @@ export default function Planning() {
       if (jourIndex < 0 || jourIndex >= DAYS_SHOWN) continue
       const xJour = LEFT_COL_WIDTH + jourIndex * DAY_WIDTH
 
-      // Les formations se partagent toute la largeur du jour entre elles, sans tenir compte des déplacements.
-      const formations = blocs.filter((b) => b.type === 'formation')
-      const { laneDeBloc: laneFormation, nbLanes: nbLanesFormation } = assignerLanes(formations)
-      const largeurFormation = DAY_WIDTH / nbLanesFormation
-      for (const bloc of formations) {
+      // Tous les blocs d'un même jour (formations ET déplacements, tous formateurs confondus) partagent
+      // le même système de couloirs : 2 blocs qui se chevauchent dans le temps ne doivent jamais se
+      // superposer visuellement, même s'ils appartiennent à des formateurs différents (ex. le
+      // déplacement d'un formateur qui tombe à la même heure que la formation d'un autre).
+      const { laneDeBloc, nbLanes } = assignerLanes(blocs)
+      const largeur = DAY_WIDTH / nbLanes
+      for (const bloc of blocs) {
         positions[bloc.id] = {
-          x: xJour + laneFormation[bloc.id] * largeurFormation,
+          x: xJour + laneDeBloc[bloc.id] * largeur,
           y: HEADER_HEIGHT + (heureEnDecimal(bloc.heure_debut) - WINDOW_START) * HOUR_HEIGHT,
-          width: largeurFormation - 3,
-          height: dureeHeures(bloc.heure_debut, bloc.heure_fin) * HOUR_HEIGHT - 3,
-        }
-      }
-
-      // Les déplacements prennent toute la largeur du jour par défaut, et ne se partagent
-      // la colonne (entre eux, jamais avec les formations) que s'ils sont plusieurs à se chevaucher.
-      const deplacements = blocs.filter((b) => b.type === 'deplacement')
-      const { laneDeBloc: laneDepl, nbLanes: nbLanesDepl } = assignerLanes(deplacements)
-      const largeurDepl = DAY_WIDTH / nbLanesDepl
-      for (const bloc of deplacements) {
-        positions[bloc.id] = {
-          x: xJour + laneDepl[bloc.id] * largeurDepl,
-          y: HEADER_HEIGHT + (heureEnDecimal(bloc.heure_debut) - WINDOW_START) * HOUR_HEIGHT,
-          width: largeurDepl - 3,
+          width: largeur - 3,
           height: dureeHeures(bloc.heure_debut, bloc.heure_fin) * HOUR_HEIGHT - 3,
         }
       }

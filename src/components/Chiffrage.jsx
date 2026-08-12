@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useState } from 'react'
 import { supabase } from '../lib/supabaseClient'
-import { grouperVoyages, dureeHeures } from '../lib/dates'
+import { grouperVoyages, dureeHeures, heureEnDecimal } from '../lib/dates'
 import { useProjetActif } from '../lib/ProjetActifContext'
 
 // Tarifs de référence (source : "2026_Outil de chiffrage des offres de formation.xlsx", feuille "Autres tarifs" / "ACTIF").
@@ -14,6 +14,10 @@ const TARIF_HORAIRE_PR_DEFAUT = 79.68
 const TARIF_JOUR_ANIMATION_PV = 1200
 const TARIF_JOUR_PREP_PV = 920
 const TARIF_JOUR_PV_PR = 637.44 // même coût de revient journalier, que ce soit animation ou préparation
+// Si le retour (dernier bloc "Déplacement" du dernier jour de mission) se termine après cette heure,
+// on considère que le formateur ne rentre pas chez lui à une heure raisonnable ce soir-là : ça compte
+// une nuit d'hôtel (et un dîner) de plus, plutôt que de considérer qu'il/elle est rentré(e) le jour même.
+const SEUIL_RETOUR_TARDIF = 20
 
 const CATEGORIES = ['formation', 'administratif', 'elearning', 'ascentline', 'deplacement', 'autre']
 const CATEGORIE_LABELS = {
@@ -277,11 +281,22 @@ export default function Chiffrage() {
         const tri = [...joursSet].sort()
         joursParService[service] = (joursParService[service] || 0) + tri.length
         for (const voyage of grouperVoyages(tri)) {
-          const nuits = Math.round(
-            (new Date(voyage.fin + 'T00:00:00').getTime() - new Date(voyage.debut + 'T00:00:00').getTime()) /
-              (24 * 60 * 60 * 1000),
+          const nuitsBase = Math.max(
+            0,
+            Math.round(
+              (new Date(voyage.fin + 'T00:00:00').getTime() - new Date(voyage.debut + 'T00:00:00').getTime()) /
+                (24 * 60 * 60 * 1000),
+            ),
           )
-          nuitsParService[service] = (nuitsParService[service] || 0) + Math.max(nuits, 0)
+          // Heure de fin du bloc "Déplacement" de retour du dernier jour de mission (s'il existe) : un
+          // retour tardif (ex. programmé le soir) implique une nuit supplémentaire, pas un aller-retour
+          // dans la journée.
+          const finsRetour = deplacements
+            .filter((d) => d.formateur_id === formateurId && d.date === voyage.fin)
+            .map((d) => heureEnDecimal(d.heure_fin))
+          const retourTardif = finsRetour.length > 0 && Math.max(...finsRetour) > SEUIL_RETOUR_TARDIF
+          const nuits = nuitsBase + (retourTardif ? 1 : 0)
+          nuitsParService[service] = (nuitsParService[service] || 0) + nuits
         }
       }
 
