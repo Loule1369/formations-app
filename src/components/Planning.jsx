@@ -30,6 +30,29 @@ function assignerLanes(blocs) {
   return { laneDeBloc, nbLanes: finLanes.length || 1 }
 }
 
+// Regroupe les blocs d'une journée en paquets connexes (2 blocs qui se chevauchent, ou qui chevauchent
+// tous les deux un 3e, forment un même paquet) : la largeur d'un bloc ne doit dépendre que de la
+// concurrence dans SON créneau horaire, pas du pic de concurrence de toute la journée (sinon un bloc
+// seul l'après-midi se retrouvait à moitié de largeur juste parce que la matinée avait 2 blocs en même temps).
+function grouperChevauchements(blocs) {
+  const tri = [...blocs].sort((a, b) => heureEnDecimal(a.heure_debut) - heureEnDecimal(b.heure_debut))
+  const groupes = []
+  let groupeCourant = []
+  let finMaxCourant = -Infinity
+  for (const bloc of tri) {
+    const debut = heureEnDecimal(bloc.heure_debut)
+    if (groupeCourant.length > 0 && debut >= finMaxCourant) {
+      groupes.push(groupeCourant)
+      groupeCourant = []
+      finMaxCourant = -Infinity
+    }
+    groupeCourant.push(bloc)
+    finMaxCourant = Math.max(finMaxCourant, heureEnDecimal(bloc.heure_fin))
+  }
+  if (groupeCourant.length > 0) groupes.push(groupeCourant)
+  return groupes
+}
+
 function formatJourLabel(date) {
   return date.toLocaleDateString('fr-FR', { weekday: 'short', day: '2-digit', month: '2-digit' })
 }
@@ -227,15 +250,19 @@ export default function Planning() {
       // Tous les blocs d'un même jour (formations ET déplacements, tous formateurs confondus) partagent
       // le même système de couloirs : 2 blocs qui se chevauchent dans le temps ne doivent jamais se
       // superposer visuellement, même s'ils appartiennent à des formateurs différents (ex. le
-      // déplacement d'un formateur qui tombe à la même heure que la formation d'un autre).
-      const { laneDeBloc, nbLanes } = assignerLanes(blocs)
-      const largeur = DAY_WIDTH / nbLanes
-      for (const bloc of blocs) {
-        positions[bloc.id] = {
-          x: xJour + laneDeBloc[bloc.id] * largeur,
-          y: HEADER_HEIGHT + (heureEnDecimal(bloc.heure_debut) - WINDOW_START) * HOUR_HEIGHT,
-          width: largeur - 3,
-          height: dureeHeures(bloc.heure_debut, bloc.heure_fin) * HOUR_HEIGHT - 3,
+      // déplacement d'un formateur qui tombe à la même heure que la formation d'un autre). Mais la
+      // largeur ne doit dépendre que de LA concurrence à CET horaire précis, pas du pic de concurrence
+      // de toute la journée — d'où le regroupement en paquets connexes avant de laner chaque paquet.
+      for (const groupe of grouperChevauchements(blocs)) {
+        const { laneDeBloc, nbLanes } = assignerLanes(groupe)
+        const largeur = DAY_WIDTH / nbLanes
+        for (const bloc of groupe) {
+          positions[bloc.id] = {
+            x: xJour + laneDeBloc[bloc.id] * largeur,
+            y: HEADER_HEIGHT + (heureEnDecimal(bloc.heure_debut) - WINDOW_START) * HOUR_HEIGHT,
+            width: largeur - 3,
+            height: dureeHeures(bloc.heure_debut, bloc.heure_fin) * HOUR_HEIGHT - 3,
+          }
         }
       }
     }
