@@ -488,9 +488,12 @@ export default function Planning() {
       }
 
       let n = calculerJoursNecessaires(dureeTotale, premierJourApresMidi)
-      if (heureDebutForcee === null && jourDepart.getDay() + (n - 1) > 5) {
-        // Traverserait le week-end : on préfère démarrer la semaine suivante plutôt que de couper
-        // la formation par deux jours de coupure.
+      if (jourDepart.getDay() + (n - 1) > 5) {
+        // Traverserait le week-end : on préfère démarrer la semaine suivante plutôt que de couper la
+        // formation par deux jours de coupure — y compris quand elle devait enchaîner l'après-midi
+        // même d'un jour déjà entamé (ex. vendredi après-midi) : on abandonne alors cet enchaînement
+        // et on redémarre lundi matin suivant, avec l'arrivée du lundi comme n'importe quelle mission.
+        heureDebutForcee = null
         jourDepart = prochainLundi(jourDepart)
         premierJourApresMidi = true
         n = calculerJoursNecessaires(dureeTotale, premierJourApresMidi)

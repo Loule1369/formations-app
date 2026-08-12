@@ -33,6 +33,12 @@ function margeTaux(pv, pr) {
   return pv > 0 ? ((pv - pr) / pv) * 100 : 0
 }
 
+// Conversion heures → jours pour le chiffrage : un palier par demi-journée de 4h, arrondi au-dessus
+// (6h/7h/8h = 1 jour, 9-12h = 1,5 jour, 13-16h = 2 jours...).
+function heuresEnJours(heures) {
+  return Math.ceil(heures / 4) * 0.5
+}
+
 function ligneVide(categorie) {
   if (categorie === 'formation') {
     return {
@@ -198,6 +204,16 @@ export default function Chiffrage() {
         if (!c.demande_ligne_id) continue
         parLigne[c.demande_ligne_id] = c.demande_lignes
       }
+      // Heures RÉELLEMENT posées dans le planning (tous groupes confondus) par formation — si le chef
+      // de projet a raccourci/allongé des blocs à la main, le chiffrage doit suivre, pas rester figé sur
+      // la durée du catalogue.
+      const heuresReellesParFormation = {}
+      for (const c of formations) {
+        const formationId = c.demande_lignes?.formation_id
+        if (!formationId) continue
+        heuresReellesParFormation[formationId] =
+          (heuresReellesParFormation[formationId] || 0) + dureeHeures(c.heure_debut, c.heure_fin)
+      }
       // Regroupe par formation (et non par groupe) : une seule ligne récapitulative dont le nombre de
       // groupes, les jours de préparation et les jours d'animation (déjà multipliés par le nb de groupes)
       // reproduisent la structure du fichier Excel de référence.
@@ -208,15 +224,17 @@ export default function Chiffrage() {
         parFormationId[dl.formation_id].nbGroupes += 1
       }
       const lignesFormations = []
-      for (const { catalogue: cat, nbGroupes } of Object.values(parFormationId)) {
+      for (const [formationId, { catalogue: cat, nbGroupes }] of Object.entries(parFormationId)) {
         if (!cat) continue
-        // Jours issus directement des colonnes K (Nb jours animation) / L (Nb jours prep) du fichier
-        // Excel de référence — pas recalculés depuis les heures, pour coller exactement à l'original.
-        // "Jours animation" reste la valeur POUR UNE SEULE formation (pas multipliée par le nombre de
-        // groupes) : c'est le total (jours prépa + animation × nb groupes) qui rend le calcul visible.
         const joursPrep = cat.jours_preparation_catalogue || 0
-        const joursAnimUnitaire = cat.jours_animation_catalogue || 0
-        const joursAnimTotal = arrondi2(joursAnimUnitaire * nbGroupes)
+        // Jours d'animation calculés depuis les heures RÉELLES du planning (tous groupes confondus),
+        // pas depuis la valeur figée du catalogue — sinon raccourcir un bloc dans le planning n'a
+        // jamais aucun effet sur le chiffrage. Repli sur le catalogue si la formation n'est pas encore
+        // planifiée (ex. ajoutée à la main dans le chiffrage sans bloc dans le planning).
+        const heuresReelles = heuresReellesParFormation[formationId] || 0
+        const joursAnimTotal =
+          heuresReelles > 0 ? heuresEnJours(heuresReelles) : arrondi2((cat.jours_animation_catalogue || 0) * nbGroupes)
+        const joursAnimUnitaire = nbGroupes > 0 ? arrondi2(joursAnimTotal / nbGroupes) : joursAnimTotal
         const joursTotal = arrondi2(joursPrep + joursAnimTotal)
         lignesFormations.push({
           demande_id: demandeId,
