@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useState } from 'react'
 import { supabase } from '../lib/supabaseClient'
-import { grouperVoyages, dureeHeures, heureEnDecimal } from '../lib/dates'
+import { grouperVoyages, dureeHeures, heureEnDecimal, parseDate, formatDate, JOUR_MS } from '../lib/dates'
 import { useProjetActif } from '../lib/ProjetActifContext'
 
 // Tarifs de référence (source : "2026_Outil de chiffrage des offres de formation.xlsx", feuille "Autres tarifs" / "ACTIF").
@@ -295,7 +295,12 @@ export default function Chiffrage() {
             .filter((d) => d.formateur_id === formateurId && d.date === voyage.fin)
             .map((d) => heureEnDecimal(d.heure_fin))
           const retourTardif = finsRetour.length > 0 && Math.max(...finsRetour) > SEUIL_RETOUR_TARDIF
-          const nuits = nuitsBase + (retourTardif ? 1 : 0)
+          // Arrivée la veille au soir (mission qui ne démarre pas un lundi) : une nuit AVANT le 1er jour
+          // de formation, que l'écart de dates (voyage.fin - voyage.debut) ne peut pas voir puisqu'il ne
+          // compte qu'entre les jours de formation eux-mêmes.
+          const veilleDebut = formatDate(new Date(parseDate(voyage.debut).getTime() - JOUR_MS))
+          const arriveeVeille = deplacements.some((d) => d.formateur_id === formateurId && d.date === veilleDebut)
+          const nuits = nuitsBase + (retourTardif ? 1 : 0) + (arriveeVeille ? 1 : 0)
           nuitsParService[service] = (nuitsParService[service] || 0) + nuits
         }
       }
