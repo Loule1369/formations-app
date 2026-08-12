@@ -103,6 +103,7 @@ create table devis_lignes (
   nb_groupes numeric,
   jours_animation_unitaire numeric,
   commentaires text,
+  formation_id uuid references formations_catalogue(id),
   created_at timestamptz not null default now()
 );
 

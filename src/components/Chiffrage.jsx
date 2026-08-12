@@ -223,9 +223,19 @@ export default function Chiffrage() {
         if (!parFormationId[dl.formation_id]) parFormationId[dl.formation_id] = { catalogue: dl.formations_catalogue, nbGroupes: 0 }
         parFormationId[dl.formation_id].nbGroupes += 1
       }
+      // Une formation déjà représentée par une ligne Manuel (touchée à la main, ou ajoutée depuis le
+      // catalogue avant même d'être planifiée) ne doit pas EN PLUS recevoir sa propre ligne générée
+      // automatiquement — sinon la même formation apparaît sur 2 lignes.
+      const formationIdsManuels = new Set(
+        lignes
+          .filter((l) => l.categorie === 'formation' && l.origine !== 'planning' && l.formation_id)
+          .map((l) => l.formation_id),
+      )
+
       const lignesFormations = []
       for (const [formationId, { catalogue: cat, nbGroupes }] of Object.entries(parFormationId)) {
         if (!cat) continue
+        if (formationIdsManuels.has(formationId)) continue
         const joursPrep = cat.jours_preparation_catalogue || 0
         // Jours d'animation calculés depuis les heures RÉELLES du planning (tous groupes confondus),
         // pas depuis la valeur figée du catalogue — sinon raccourcir un bloc dans le planning n'a
@@ -247,6 +257,7 @@ export default function Chiffrage() {
           prix_revient: arrondi2(joursTotal * TARIF_JOUR_PV_PR),
           origine: 'planning',
           categorie: 'formation',
+          formation_id: formationId,
         })
       }
 
@@ -407,6 +418,7 @@ export default function Chiffrage() {
         prix_unitaire: arrondi2(joursPrep * TARIF_JOUR_PREP_PV + joursAnim * TARIF_JOUR_ANIMATION_PV),
         prix_revient: arrondi2((joursPrep + joursAnim) * TARIF_JOUR_PV_PR),
         origine: null,
+        formation_id: cat.id,
       })
       .select('*')
       .single()
