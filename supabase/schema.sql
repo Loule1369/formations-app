@@ -104,6 +104,7 @@ create table devis_lignes (
   jours_animation_unitaire numeric,
   commentaires text,
   formation_id uuid references formations_catalogue(id),
+  ordre numeric not null default 0,
   created_at timestamptz not null default now()
 );
 

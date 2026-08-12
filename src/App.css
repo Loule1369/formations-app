@@ -321,7 +321,7 @@
    garantit que les colonnes PV/PR/Marge tombent exactement à la même verticale dans les deux tableaux. */
 .table-devis {
   table-layout: fixed;
-  width: 1380px;
+  width: 1430px;
   border-collapse: collapse;
   margin: 0.5rem 0;
   font-family: system-ui, sans-serif;
@@ -338,7 +338,7 @@
 .table-devis th:nth-child(8), .table-devis td:nth-child(8) { width: 80px; }
 .table-devis th:nth-child(9), .table-devis td:nth-child(9) { width: 180px; }
 .table-devis th:nth-child(10), .table-devis td:nth-child(10) { width: 90px; }
-.table-devis th:nth-child(11), .table-devis td:nth-child(11) { width: 40px; }
+.table-devis th:nth-child(11), .table-devis td:nth-child(11) { width: 90px; }
 
 .table-devis th,
 .table-devis td {
@@ -408,6 +408,18 @@
   border-top: 1px solid #ccc;
   border-bottom: 2px solid #eee;
   background: #fafafa;
+}
+
+.cellule-actions {
+  display: flex;
+  gap: 2px;
+  white-space: nowrap;
+}
+
+.cellule-actions button {
+  padding: 0.1rem 0.35rem;
+  font-size: 0.7rem;
+  line-height: 1;
 }
 
 .bouton-lien {

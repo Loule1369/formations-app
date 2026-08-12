@@ -513,6 +513,34 @@ export default function Chiffrage() {
     setLignes((prev) => prev.filter((l) => l.id !== id))
   }
 
+  // Déplace une ligne d'un cran (haut/bas) au sein de sa catégorie, en renumérotant tout le groupe
+  // (0, 1, 2...) pour un ordre toujours propre, quel que soit l'historique des valeurs précédentes.
+  async function deplacerLigne(id, direction) {
+    const ligne = lignes.find((l) => l.id === id)
+    if (!ligne) return
+    const memeCategorie = lignes
+      .filter((l) => l.categorie === ligne.categorie)
+      .sort(
+        (a, b) =>
+          (Number(a.ordre) || 0) - (Number(b.ordre) || 0) ||
+          (a.created_at || '').localeCompare(b.created_at || ''),
+      )
+    const index = memeCategorie.findIndex((l) => l.id === id)
+    const nouvelIndex = index + direction
+    if (nouvelIndex < 0 || nouvelIndex >= memeCategorie.length) return
+
+    const reordonnee = [...memeCategorie]
+    ;[reordonnee[index], reordonnee[nouvelIndex]] = [reordonnee[nouvelIndex], reordonnee[index]]
+    const nouvelOrdre = new Map(reordonnee.map((l, i) => [l.id, i]))
+
+    setLignes((prev) => prev.map((l) => (nouvelOrdre.has(l.id) ? { ...l, ordre: nouvelOrdre.get(l.id) } : l)))
+    await Promise.all(
+      [...nouvelOrdre.entries()].map(([ligneId, ordre]) =>
+        supabase.from('devis_lignes').update({ ordre }).eq('id', ligneId),
+      ),
+    )
+  }
+
   function modifierResumeLocal(champ, valeur) {
     setResume((prev) => ({ ...prev, [champ]: valeur }))
   }
@@ -645,7 +673,14 @@ export default function Chiffrage() {
           <tbody>
             {CATEGORIES.map((cat) => {
               const lignesCat = lignes.filter((l) => l.categorie === cat)
-              if (cat === 'deplacement') lignesCat.sort(comparerLignesDeplacement)
+              // Ordre manuel (boutons ▲▼) prioritaire ; à égalité, FORDOC en tête pour les frais de
+              // déplacement, sinon ordre de création.
+              lignesCat.sort((a, b) => {
+                const diffOrdre = (Number(a.ordre) || 0) - (Number(b.ordre) || 0)
+                if (diffOrdre !== 0) return diffOrdre
+                if (cat === 'deplacement') return comparerLignesDeplacement(a, b)
+                return (a.created_at || '').localeCompare(b.created_at || '')
+              })
               const estFormation = cat === 'formation'
               const t = totaux(lignesCat)
               return (
@@ -757,8 +792,10 @@ export default function Chiffrage() {
                             {l.origine === 'planning' ? 'Planning' : 'Manuel'}
                           </span>
                         </td>
-                        <td>
-                          <button type="button" onClick={() => supprimerLigne(l.id)}>×</button>
+                        <td className="cellule-actions">
+                          <button type="button" title="Monter" onClick={() => deplacerLigne(l.id, -1)}>▲</button>
+                          <button type="button" title="Descendre" onClick={() => deplacerLigne(l.id, 1)}>▼</button>
+                          <button type="button" title="Supprimer" onClick={() => supprimerLigne(l.id)}>×</button>
                         </td>
                       </tr>
                     )
