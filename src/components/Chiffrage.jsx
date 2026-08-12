@@ -49,7 +49,7 @@ function ligneVide(categorie) {
     }
   }
   return {
-    libelle: 'Nouvelle ligne',
+    libelle: categorie === 'ascentline' ? 'Nombre de licences Ascentline' : 'Nouvelle ligne',
     quantite: 1,
     prix_unitaire: 0,
     prix_revient: 0,
@@ -96,6 +96,7 @@ export default function Chiffrage() {
   const [message, setMessage] = useState('')
   const [succes, setSucces] = useState('')
   const [generation, setGeneration] = useState(false)
+  const [confirmerReinitialisation, setConfirmerReinitialisation] = useState(false)
 
   useEffect(() => {
     supabase
@@ -336,6 +337,20 @@ export default function Chiffrage() {
     }
   }
 
+  // Contrairement au bouton normal (qui protège les lignes touchées à la main, marquées "Manuel"),
+  // celui-ci efface VRAIMENT tout (formations + déplacement, y compris les lignes modifiées) avant de
+  // régénérer — utile après avoir régénéré le planning pour repartir d'une feuille blanche en test.
+  async function reinitialiserCompletement() {
+    if (!scenarioId) return
+    if (!confirmerReinitialisation) {
+      setConfirmerReinitialisation(true)
+      return
+    }
+    setConfirmerReinitialisation(false)
+    await supabase.from('devis_lignes').delete().eq('demande_id', demandeId).in('categorie', ['formation', 'deplacement'])
+    await genererDepuisPlanning()
+  }
+
   async function ajouterLigneLibre(categorie) {
     const { data, error } = await supabase
       .from('devis_lignes')
@@ -555,11 +570,22 @@ export default function Chiffrage() {
         <button type="button" onClick={genererDepuisPlanning} disabled={generation}>
           {generation ? 'Génération…' : 'Générer / réinitialiser depuis ce planning'}
         </button>
+        <button
+          type="button"
+          onClick={reinitialiserCompletement}
+          disabled={generation || !scenarioId}
+          className={confirmerReinitialisation ? 'bouton-danger' : ''}
+          title="Efface aussi les lignes Formations/Déplacement modifiées à la main, puis régénère"
+        >
+          {confirmerReinitialisation ? 'Confirmer : tout effacer (y compris Manuel) ?' : 'Tout réinitialiser'}
+        </button>
       </div>
       <p className="astuce">
-        Ce bouton (re)calcule uniquement les lignes automatiques (formations, nuits, repas, heures de
-        déplacement) à partir du planning. Les lignes ajoutées à la main (administratif, e-learning,
-        licences Ascentline...) ne sont jamais touchées.
+        « Générer / réinitialiser » (re)calcule les lignes automatiques (formations, nuits, repas,
+        heures de déplacement) sans toucher les lignes Formations/Déplacement modifiées à la main
+        (badge Manuel) ni les autres catégories (administratif, e-learning, licences Ascentline...).
+        « Tout réinitialiser » efface aussi les lignes Manuel des catégories Formations/Déplacement —
+        utile après avoir régénéré le planning pour repartir d'une feuille blanche.
       </p>
 
       {message && <p className="message erreur">{message}</p>}
@@ -574,7 +600,6 @@ export default function Chiffrage() {
               <th>Nb groupes</th>
               <th>Jours animation</th>
               <th>Jours total</th>
-              <th>Qté</th>
               <th>PV HT</th>
               <th>PR HT</th>
               <th>Marge</th>
@@ -592,7 +617,7 @@ export default function Chiffrage() {
               return (
                 <Fragment key={cat}>
                   <tr className="ligne-categorie">
-                    <td colSpan={12}>{CATEGORIE_LABELS[cat]}</td>
+                    <td colSpan={11}>{CATEGORIE_LABELS[cat]}</td>
                   </tr>
                   {lignesCat.map((l) => {
                     const joursPrep = Number(l.jours_preparation) || 0
@@ -646,14 +671,9 @@ export default function Chiffrage() {
                               />
                             </td>
                             <td>{joursTotal.toFixed(1)}</td>
-                            <td>—</td>
                           </>
                         ) : (
                           <>
-                            <td>—</td>
-                            <td>—</td>
-                            <td>—</td>
-                            <td>—</td>
                             <td>
                               <input
                                 type="number"
@@ -663,6 +683,9 @@ export default function Chiffrage() {
                                 onBlur={() => sauvegarderLigne(l.id)}
                               />
                             </td>
+                            <td>—</td>
+                            <td>—</td>
+                            <td>—</td>
                           </>
                         )}
                         <td>
@@ -685,7 +708,7 @@ export default function Chiffrage() {
                             onBlur={() => sauvegarderLigne(l.id)}
                           />
                         </td>
-                        <td>{(totalLignePV - totalLignePR).toFixed(2)} €</td>
+                        <td>{margeTaux(totalLignePV, totalLignePR).toFixed(0)}%</td>
                         <td>
                           <input
                             type="text"
@@ -707,7 +730,7 @@ export default function Chiffrage() {
                     )
                   })}
                   <tr className="ligne-ajout">
-                    <td colSpan={12}>
+                    <td colSpan={11}>
                       {estFormation && (
                         <select
                           className="select-ajout"
@@ -748,10 +771,9 @@ export default function Chiffrage() {
                       <td></td>
                       <td></td>
                       <td></td>
-                      <td></td>
                       <td><strong>{t.pv.toFixed(2)} €</strong></td>
                       <td><strong>{t.pr.toFixed(2)} €</strong></td>
-                      <td><strong>{t.marge.toFixed(2)} € ({t.taux.toFixed(0)}%)</strong></td>
+                      <td><strong>{t.taux.toFixed(0)}%</strong></td>
                       <td></td>
                       <td></td>
                       <td></td>

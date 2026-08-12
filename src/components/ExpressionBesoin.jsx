@@ -10,8 +10,16 @@ const STATUT_LABELS = {
   termine: 'Terminé',
 }
 
+const OPTION_FORMATION_SPECIFIQUE = '__specifique__'
+
 function ligneVide() {
   return { formationId: '', nbParticipants: 1, nbGroupes: 1 }
+}
+
+// Même arrondi que le fichier Excel de référence pour convertir des heures en "jours" (au quart de
+// jour le plus proche, base 7h) : voir colonnes K/L de l'onglet ACTIF.
+function arrondiQuartJour(heures) {
+  return Math.round((heures / 7) * 4) / 4
 }
 
 export default function ExpressionBesoin() {
@@ -24,6 +32,7 @@ export default function ExpressionBesoin() {
   const [nouveauClientNom, setNouveauClientNom] = useState('')
   const [notes, setNotes] = useState('')
   const [lignes, setLignes] = useState([ligneVide()])
+  const [modaleFormationSpecifique, setModaleFormationSpecifique] = useState(null) // { index, nom, dureeAnimation, dureePreparation }
 
   const [chargement, setChargement] = useState(true)
   const [envoi, setEnvoi] = useState(false)
@@ -74,6 +83,39 @@ export default function ExpressionBesoin() {
 
   function supprimerLigne(index) {
     setLignes((prev) => prev.filter((_, i) => i !== index))
+  }
+
+  // Crée une formation "à la volée" dans le catalogue (nom + durées définies par le chef de projet) :
+  // elle se comporte ensuite exactement comme une formation du catalogue partout ailleurs (Planning,
+  // Chiffrage) — mêmes tarifs jour (colonne A du fichier de référence), même logique de planification.
+  async function creerFormationSpecifique() {
+    if (!modaleFormationSpecifique) return
+    const { index, nom, dureeAnimation, dureePreparation } = modaleFormationSpecifique
+    if (!nom.trim()) {
+      setErreur('Indiquez un nom pour la formation spécifique.')
+      return
+    }
+    const dureeH = Number(dureeAnimation) || 0
+    const dureePrepH = Number(dureePreparation) || 0
+    const { data, error } = await supabase
+      .from('formations_catalogue')
+      .insert({
+        nom: nom.trim(),
+        duree_h: dureeH,
+        duree_prep_h: dureePrepH,
+        jours_animation_catalogue: arrondiQuartJour(dureeH),
+        jours_preparation_catalogue: arrondiQuartJour(dureePrepH),
+      })
+      .select('id, code, nom, duree_h, prix')
+      .single()
+    if (error) {
+      setErreur(error.message)
+      return
+    }
+    setFormations((prev) => [...prev, data].sort((a, b) => a.nom.localeCompare(b.nom)))
+    majLigne(index, 'formationId', data.id)
+    setModaleFormationSpecifique(null)
+    setErreur('')
   }
 
   async function envoyer(e) {
@@ -190,9 +232,16 @@ export default function ExpressionBesoin() {
             <div className="ligne-formation" key={index}>
               <select
                 value={ligne.formationId}
-                onChange={(e) => majLigne(index, 'formationId', e.target.value)}
+                onChange={(e) => {
+                  if (e.target.value === OPTION_FORMATION_SPECIFIQUE) {
+                    setModaleFormationSpecifique({ index, nom: '', dureeAnimation: '', dureePreparation: '' })
+                    return
+                  }
+                  majLigne(index, 'formationId', e.target.value)
+                }}
               >
                 <option value="">— Choisir une formation —</option>
+                <option value={OPTION_FORMATION_SPECIFIQUE}>+ Créer une formation spécifique…</option>
                 {formations.map((f) => (
                   <option key={f.id} value={f.id}>
                     {f.nom} ({f.duree_h}h)
@@ -263,6 +312,58 @@ export default function ExpressionBesoin() {
           </ul>
         )}
       </section>
+
+      {modaleFormationSpecifique && (
+        <div className="modale-fond" onMouseDown={() => setModaleFormationSpecifique(null)}>
+          <div className="modale-contenu" onMouseDown={(e) => e.stopPropagation()}>
+            <h3>Formation spécifique</h3>
+            <label>
+              Nom de la formation
+              <input
+                type="text"
+                value={modaleFormationSpecifique.nom}
+                onChange={(e) =>
+                  setModaleFormationSpecifique((prev) => ({ ...prev, nom: e.target.value }))
+                }
+                autoFocus
+              />
+            </label>
+            <label>
+              Durée d'animation (heures)
+              <input
+                type="number"
+                min="0"
+                step="0.5"
+                value={modaleFormationSpecifique.dureeAnimation}
+                onChange={(e) =>
+                  setModaleFormationSpecifique((prev) => ({ ...prev, dureeAnimation: e.target.value }))
+                }
+              />
+            </label>
+            <label>
+              Durée de préparation (heures)
+              <input
+                type="number"
+                min="0"
+                step="0.5"
+                value={modaleFormationSpecifique.dureePreparation}
+                onChange={(e) =>
+                  setModaleFormationSpecifique((prev) => ({ ...prev, dureePreparation: e.target.value }))
+                }
+              />
+            </label>
+            <p className="astuce">
+              Le coût sera calculé avec les mêmes tarifs jour que les autres formations (préparation,
+              animation). L'administratif par défaut (0,5 j) reste inchangé.
+            </p>
+            {erreur && <p className="message erreur">{erreur}</p>}
+            <div className="modale-actions">
+              <button type="button" onClick={() => setModaleFormationSpecifique(null)}>Annuler</button>
+              <button type="button" onClick={creerFormationSpecifique}>Créer</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

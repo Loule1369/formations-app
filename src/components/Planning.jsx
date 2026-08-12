@@ -13,8 +13,6 @@ const LEFT_COL_WIDTH = 52
 const DAYS_SHOWN = 21
 const DUREE_DEPLACEMENT = 3
 
-const PALETTE = ['#2e5c8a', '#8a2e5c', '#2e8a5c', '#8a6b2e', '#5c2e8a', '#2e8a8a', '#8a2e2e', '#4a4a4a']
-
 // Répartit des blocs qui se chevauchent dans le temps en couloirs (coloration d'intervalles).
 function assignerLanes(blocs) {
   const tri = [...blocs].sort((a, b) => heureEnDecimal(a.heure_debut) - heureEnDecimal(b.heure_debut))
@@ -57,21 +55,26 @@ export default function Planning() {
   const [modaleFormateur, setModaleFormateur] = useState(null) // { creneau, valeur }
   const blocRefs = useRef({})
   const blocCopieRef = useRef(null)
-  // Pile d'actions annulables avec Ctrl+Z : { type: 'creneaux', creneaux } avant une mutation de blocs,
-  // ou { type: 'participants', ligneId, valeur } avec l'ANCIENNE valeur avant une modification du
-  // nombre de participants. Ne couvre pas les opérations sur les scénarios eux-mêmes (dupliquer/
-  // supprimer/retenir un scénario).
+  // Pile d'actions annulables avec Ctrl+Z :
+  // - { type: 'creneaux', creneaux } avant une mutation de blocs
+  // - { type: 'participants', ligneId, valeur } avec l'ANCIENNE valeur avant une modif de participants
+  // - { type: 'ligne_formation', ligne, creneaux } avant de supprimer un groupe entier (ligne + blocs)
+  // - { type: 'suppression_ligne_formation', ligneId } après avoir créé un groupe par duplication
+  // Ne couvre pas les opérations sur les scénarios eux-mêmes (dupliquer/supprimer/retenir un scénario).
   const pileUndoRef = useRef([])
   const MAX_UNDO = 20
 
-  function empilerUndo() {
-    pileUndoRef.current.push({ type: 'creneaux', creneaux })
+  function empilerAction(action) {
+    pileUndoRef.current.push(action)
     if (pileUndoRef.current.length > MAX_UNDO) pileUndoRef.current.shift()
   }
 
+  function empilerUndo() {
+    empilerAction({ type: 'creneaux', creneaux })
+  }
+
   function empilerUndoParticipants(ligneId, ancienneValeur) {
-    pileUndoRef.current.push({ type: 'participants', ligneId, valeur: ancienneValeur })
-    if (pileUndoRef.current.length > MAX_UNDO) pileUndoRef.current.shift()
+    empilerAction({ type: 'participants', ligneId, valeur: ancienneValeur })
   }
 
   // Réconcilie la base avec un snapshot : supprime ce qui a été ajouté depuis, remet à jour ce qui a
@@ -111,6 +114,46 @@ export default function Planning() {
     setLignes((prev) => prev.map((l) => (l.id === ligneId ? { ...l, nb_participants: ancienneValeur } : l)))
   }
 
+  // Ré-insère un groupe (demande_ligne) supprimé, avec ses blocs, en conservant les mêmes id.
+  async function restaurerLigneFormation(ligne, blocsOriginaux) {
+    const { error } = await supabase.from('demande_lignes').insert({
+      id: ligne.id,
+      demande_id: demandeId,
+      formation_id: ligne.formation_id,
+      nb_participants: ligne.nb_participants,
+      groupe: ligne.groupe,
+    })
+    if (error) {
+      setMessage(error.message)
+      return
+    }
+    setLignes((prev) => [...prev, ligne])
+    if (blocsOriginaux.length > 0) {
+      await supabase.from('creneaux').insert(
+        blocsOriginaux.map((c) => ({
+          id: c.id,
+          demande_id: demandeId,
+          demande_ligne_id: ligne.id,
+          scenario_id: scenarioId,
+          formateur_id: c.formateur_id,
+          type: c.type,
+          date: c.date,
+          heure_debut: c.heure_debut,
+          heure_fin: c.heure_fin,
+          modifie_manuellement: c.modifie_manuellement || false,
+        })),
+      )
+      setCreneaux((prev) => [...prev, ...blocsOriginaux])
+    }
+  }
+
+  // Supprime un groupe (demande_ligne) qui venait d'être créé par duplication.
+  async function annulerCreationLigneFormation(ligneId) {
+    setLignes((prev) => prev.filter((l) => l.id !== ligneId))
+    setCreneaux((prev) => prev.filter((c) => c.demande_ligne_id !== ligneId))
+    await supabase.from('demande_lignes').delete().eq('id', ligneId)
+  }
+
   async function annulerDerniereAction() {
     const action = pileUndoRef.current.pop()
     if (!action) {
@@ -121,6 +164,10 @@ export default function Planning() {
     setSucces('')
     if (action.type === 'participants') {
       await restaurerParticipants(action.ligneId, action.valeur)
+    } else if (action.type === 'ligne_formation') {
+      await restaurerLigneFormation(action.ligne, action.creneaux)
+    } else if (action.type === 'suppression_ligne_formation') {
+      await annulerCreationLigneFormation(action.ligneId)
     } else {
       await restaurerCreneaux(action.creneaux)
     }
@@ -132,14 +179,19 @@ export default function Planning() {
     return decimalEnHeure(Math.min(heureEnDecimal(creneau.heure_debut) + duree, WINDOW_END))
   }
 
-  // Couleur déterministe par formation (même code = même couleur, quel que soit le projet ou le formateur).
-  function formationCouleur(code) {
-    if (!code) return '#4a4a4a'
+  // Couleur pastel déterministe par formation (même code = même teinte, quel que soit le projet ou le
+  // formateur) : chaque groupe suivant d'une même formation est rendu dans un dégradé plus clair de
+  // cette même teinte, pour les distinguer d'un coup d'œil sans changer complètement de couleur.
+  function formationCouleur(code, groupe = 1) {
+    if (!code) return 'hsl(0, 0%, 55%)'
     let hash = 0
     for (let i = 0; i < code.length; i++) {
-      hash = (hash * 31 + code.charCodeAt(i)) % 997
+      hash = (hash * 31 + code.charCodeAt(i)) % 360
     }
-    return PALETTE[Math.abs(hash) % PALETTE.length]
+    const teinte = Math.abs(hash) % 360
+    const decalage = (Math.max(1, groupe) - 1) * 12
+    const luminosite = Math.min(82, 62 + decalage)
+    return `hsl(${teinte}, 55%, ${luminosite}%)`
   }
 
   function nomFormateur(formateurId) {
@@ -717,29 +769,62 @@ export default function Planning() {
     await chargerScenario(scenarioId)
   }
 
-  // Supprime TOUS les blocs d'une même formation (tous les jours d'un même groupe), pas juste celui
-  // sur lequel on a cliqué.
+  // Supprime un groupe entier (la demande_ligne ET tous ses blocs), pas juste le bloc sur lequel on a
+  // cliqué — un groupe supprimé disparaît aussi de la liste des formations (et donc du chiffrage).
   async function supprimerFormation(demandeLigneId) {
     if (!demandeLigneId) return
-    const idsASupprimer = creneaux.filter((c) => c.demande_ligne_id === demandeLigneId).map((c) => c.id)
-    if (idsASupprimer.length === 0) return
-    empilerUndo()
+    const ligneOriginale = lignes.find((l) => l.id === demandeLigneId)
+    if (!ligneOriginale) return
+    const blocsASupprimer = creneaux.filter((c) => c.demande_ligne_id === demandeLigneId)
+    empilerAction({ type: 'ligne_formation', ligne: ligneOriginale, creneaux: blocsASupprimer })
+
+    const idsASupprimer = blocsASupprimer.map((c) => c.id)
     if (idsASupprimer.includes(blocSelectionneId)) setBlocSelectionneId('')
     setCreneaux((prev) => prev.filter((c) => !idsASupprimer.includes(c.id)))
-    await supabase.from('creneaux').delete().in('id', idsASupprimer)
+    setLignes((prev) => prev.filter((l) => l.id !== demandeLigneId))
+    // La suppression de la demande_ligne entraîne celle de ses créneaux (on delete cascade).
+    await supabase.from('demande_lignes').delete().eq('id', demandeLigneId)
     await finaliserMutation()
-    setSucces('Formation supprimée.')
+    setSucces('Formation (groupe) supprimée.')
   }
 
-  // Duplique tous les blocs d'une même formation (tous les jours d'un même groupe) d'un coup, en
-  // conservant les écarts entre jours d'origine, positionnés juste après le dernier jour existant.
+  // Duplique une formation = un NOUVEAU GROUPE (2e, 3e...), avec sa propre demande_ligne : les groupes
+  // suivent en général un planning posté différent (formateur, dates), rarement identique au premier.
+  // Les jours du nouveau groupe reprennent les écarts du groupe d'origine, juste après son dernier jour.
   async function dupliquerFormationEntiere(creneau) {
     if (!creneau.demande_ligne_id) return
     setMessage('')
     setSucces('')
+    const ligneOriginale = lignes.find((l) => l.id === creneau.demande_ligne_id)
+    if (!ligneOriginale) return
     const blocsFormation = creneaux.filter((c) => c.demande_ligne_id === creneau.demande_ligne_id)
     if (blocsFormation.length === 0) return
-    empilerUndo()
+
+    if (!ligneOriginale.groupe) {
+      await supabase.from('demande_lignes').update({ groupe: 1 }).eq('id', ligneOriginale.id)
+      setLignes((prev) => prev.map((l) => (l.id === ligneOriginale.id ? { ...l, groupe: 1 } : l)))
+    }
+    const groupesExistants = lignes
+      .filter((l) => l.formation_id === ligneOriginale.formation_id)
+      .map((l) => l.groupe || 1)
+    const nouveauGroupe = Math.max(...groupesExistants) + 1
+
+    const { data: nouvelleLigne, error: erreurLigne } = await supabase
+      .from('demande_lignes')
+      .insert({
+        demande_id: demandeId,
+        formation_id: ligneOriginale.formation_id,
+        nb_participants: ligneOriginale.nb_participants,
+        groupe: nouveauGroupe,
+      })
+      .select('id, formation_id, nb_participants, groupe, formations_catalogue(nom, duree_h, code)')
+      .single()
+    if (erreurLigne) {
+      setMessage(erreurLigne.message)
+      return
+    }
+    setLignes((prev) => [...prev, nouvelleLigne])
+    empilerAction({ type: 'suppression_ligne_formation', ligneId: nouvelleLigne.id })
 
     const datesTriees = [...new Set(blocsFormation.map((b) => b.date))].sort()
     const mappingDates = {}
@@ -752,7 +837,7 @@ export default function Planning() {
     const { error } = await supabase.from('creneaux').insert(
       blocsFormation.map((c) => ({
         demande_id: demandeId,
-        demande_ligne_id: c.demande_ligne_id,
+        demande_ligne_id: nouvelleLigne.id,
         scenario_id: scenarioId,
         formateur_id: c.formateur_id,
         type: c.type,
@@ -767,7 +852,7 @@ export default function Planning() {
     }
     await synchroniserDeplacements(scenarioId, demandeId)
     await chargerScenario(scenarioId)
-    setSucces(`Formation dupliquée sur ${datesTriees.length} jour(s), à partir du ${mappingDates[datesTriees[0]]}.`)
+    setSucces(`Formation dupliquée en groupe ${nouveauGroupe}, à partir du ${mappingDates[datesTriees[0]]}.`)
   }
 
   // Change le formateur d'un créneau : pour une formation, s'applique à tous les blocs de la même
@@ -1191,7 +1276,9 @@ export default function Planning() {
                 const pos = disposition[c.id]
                 if (!pos) return null
                 const estFormation = c.type === 'formation'
-                const couleur = estFormation ? formationCouleur(c.demande_lignes?.formations_catalogue?.code) : '#888'
+                const couleur = estFormation
+                  ? formationCouleur(c.demande_lignes?.formations_catalogue?.code, c.demande_lignes?.groupe)
+                  : '#888'
                 return (
                   <div
                     key={c.id}

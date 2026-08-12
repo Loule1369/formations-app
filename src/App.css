@@ -246,7 +246,7 @@
 
 .planning-bloc {
   border-radius: 4px;
-  color: #fff;
+  color: #2a2a2a;
   font-size: 0.72rem;
   padding: 0.2rem 0.35rem;
   box-sizing: border-box;
@@ -289,7 +289,7 @@
   right: 2px;
   background: transparent;
   border: none;
-  color: #fff;
+  color: #2a2a2a;
   cursor: pointer;
   font-size: 0.9rem;
   line-height: 1;
@@ -403,7 +403,7 @@
   color: #2e5c8a;
   cursor: pointer;
   font: inherit;
-  max-width: 320px;
+  min-width: 420px;
 }
 
 .section-devis {
@@ -513,12 +513,19 @@
   margin-top: 0;
 }
 
+.modale-contenu label {
+  display: block;
+  font-size: 0.85rem;
+  color: #333;
+  margin-top: 0.75rem;
+}
+
 .modale-contenu input,
 .modale-contenu select {
   width: 100%;
   box-sizing: border-box;
   padding: 0.4rem;
-  margin-top: 0.5rem;
+  margin-top: 0.3rem;
 }
 
 .modale-actions {
