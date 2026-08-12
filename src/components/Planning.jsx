@@ -292,16 +292,16 @@ export default function Planning() {
 
   // Génère le planning par défaut : chaque formation reste groupée sur des jours consécutifs sans
   // traverser un week-end (repoussée au lundi suivant si besoin) et remplit chaque jour au maximum
-  // (le reliquat, s'il y en a un, forme un seul bloc net sur le dernier jour) — les équipes formées
-  // suivent en général un planning posté, on n'enchaîne donc jamais 2 groupes d'une même formation sur
-  // une même demi-journée. En revanche, si la matinée d'un jour est déjà prise par la FIN d'une autre
-  // formation (même mission), la formation suivante peut démarrer l'après-midi de ce même jour plutôt
-  // que de perdre du temps.
+  // (le reliquat, s'il y en a un, forme un seul bloc net sur le dernier jour). On n'enchaîne jamais 2
+  // formations (même groupe ou pas) au sein d'une même demi-journée — mais si la matinée d'un jour est
+  // déjà entièrement prise par la FIN d'une formation, la formation suivante peut démarrer sur
+  // l'après-midi COMPLÈTE de ce même jour plutôt que de perdre une demi-journée : chaque groupe garde
+  // sa demi-journée pleine et dédiée, ce qui reste cohérent avec des équipes postées (une équipe le
+  // matin, une autre l'après-midi), sans jamais les mélanger sur le même créneau.
   async function genererPlanningParDefaut(demandeIdCible, scenarioIdCible, lignesData) {
     if (!lignesData || lignesData.length === 0 || formateurs.length === 0) return
     let jourCourant = null
     let finJourCourant = null
-    let formationIdCourant = null
     const blocs = []
 
     for (const ligne of lignesData) {
@@ -312,11 +312,7 @@ export default function Planning() {
       let heureDebutForcee = null
       if (jourCourant === null) {
         jourDepart = prochainLundi(new Date(new Date().toDateString()))
-      } else if (
-        ligne.formation_id !== formationIdCourant &&
-        finJourCourant !== null &&
-        finJourCourant <= PAUSE_DEJEUNER_DEBUT
-      ) {
+      } else if (finJourCourant !== null && finJourCourant <= PAUSE_DEJEUNER_DEBUT) {
         jourDepart = jourCourant
         heureDebutForcee = PAUSE_DEJEUNER_FIN
       } else {
@@ -372,7 +368,6 @@ export default function Planning() {
         }
       })
       jourCourant = jours[jours.length - 1].date
-      formationIdCourant = ligne.formation_id
     }
 
     await supabase.from('creneaux').insert(blocs)

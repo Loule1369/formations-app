@@ -320,6 +320,8 @@
   min-width: 1000px;
   border-collapse: collapse;
   margin: 1rem 0;
+  font-family: system-ui, sans-serif;
+  font-size: 0.85rem;
 }
 
 .table-devis th,
