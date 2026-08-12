@@ -211,7 +211,10 @@ export default function Planning() {
 
   const disposition = useMemo(() => {
     const parJour = {}
+    // Un déplacement "fantôme" (durée nulle) est un déplacement supprimé volontairement par le chef de
+    // projet : il reste en base pour empêcher sa recréation automatique, mais ne doit jamais s'afficher.
     for (const c of creneaux) {
+      if (c.type === 'deplacement' && c.heure_debut === c.heure_fin) continue
       if (!parJour[c.date]) parJour[c.date] = []
       parJour[c.date].push(c)
     }
@@ -731,8 +734,24 @@ export default function Planning() {
   }
 
   async function supprimerBloc(id) {
+    const creneau = creneaux.find((c) => c.id === id)
+    if (!creneau) return
     empilerUndo()
     if (blocSelectionneId === id) setBlocSelectionneId('')
+
+    if (creneau.type === 'deplacement') {
+      // Une suppression "en dur" reviendrait aussitôt : synchroniserDeplacements recrée automatiquement
+      // tout déplacement manquant qui correspond encore à une mission en cours (voir plus bas). On
+      // transforme donc le bloc en "fantôme" (durée nulle, marqué modifié à la main) — la synchronisation
+      // le laisse alors tranquille au lieu de le recréer, et il ne s'affiche plus (durée nulle).
+      setCreneaux((prev) =>
+        prev.map((c) => (c.id === id ? { ...c, heure_fin: c.heure_debut, modifie_manuellement: true } : c)),
+      )
+      await supabase.from('creneaux').update({ heure_fin: creneau.heure_debut, modifie_manuellement: true }).eq('id', id)
+      setSucces('Déplacement supprimé (ne sera pas recréé automatiquement tant que la mission ne change pas).')
+      return
+    }
+
     // Retire le bloc de l'état local tout de suite : sans ça, seuls les blocs "Déplacement" sont
     // rafraîchis par finaliserMutation, et le bloc supprimé (une formation) restait affiché à l'écran
     // bien qu'il soit déjà effacé en base — donnant l'impression que la suppression ne fonctionnait pas.

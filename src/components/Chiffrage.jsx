@@ -128,13 +128,14 @@ export default function Chiffrage() {
     chargerResume()
   }, [scenarioId])
 
-  // Dès qu'un scénario est sélectionné et qu'aucune ligne n'existe encore, on génère le devis
-  // théorique automatiquement — pas besoin de cliquer le bouton à chaque ouverture.
+  // Dès qu'un scénario est sélectionné, on resynchronise automatiquement les lignes générées depuis le
+  // planning (formations + déplacement) — pas besoin de cliquer le bouton à chaque ouverture. Ça évite
+  // qu'une formation supprimée dans le Planning continue d'apparaître ici tant qu'on n'a pas pensé à
+  // régénérer manuellement. Les lignes touchées à la main (badge Manuel) ne sont jamais concernées.
   useEffect(() => {
-    if (!scenarioId || lignes.length > 0) return
-    if (formateurs.length === 0) return
+    if (!scenarioId || formateurs.length === 0) return
     genererDepuisPlanning()
-  }, [scenarioId, lignes.length, formateurs.length])
+  }, [scenarioId, formateurs.length])
 
   async function chargerDemande(id) {
     setMessage('')
