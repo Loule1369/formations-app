@@ -319,7 +319,7 @@
   width: 100%;
   min-width: 1000px;
   border-collapse: collapse;
-  margin: 1rem 0;
+  margin: 0.5rem 0;
   font-family: system-ui, sans-serif;
   font-size: 0.85rem;
 }
@@ -327,7 +327,7 @@
 .table-devis th,
 .table-devis td {
   border-bottom: 1px solid #eee;
-  padding: 0.4rem;
+  padding: 0.25rem 0.4rem;
   text-align: left;
   white-space: nowrap;
 }
@@ -335,7 +335,7 @@
 .table-devis input {
   width: 100%;
   box-sizing: border-box;
-  padding: 0.3rem;
+  padding: 0.2rem 0.3rem;
   font: inherit;
   color: inherit;
 }
@@ -363,10 +363,43 @@
   background: #fafafa;
 }
 
+.ligne-ajout td {
+  border-bottom: none;
+  padding-top: 0.15rem;
+  padding-bottom: 0.15rem;
+}
+
+.bouton-lien {
+  background: none;
+  border: none;
+  padding: 0.15rem 0;
+  color: #2e5c8a;
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+  white-space: nowrap;
+}
+
+.select-ajout {
+  background: none;
+  border: 1px dashed #2e5c8a;
+  border-radius: 4px;
+  padding: 0.2rem 0.4rem;
+  color: #2e5c8a;
+  cursor: pointer;
+  font: inherit;
+  max-width: 320px;
+}
+
 .section-devis {
-  margin-bottom: 2rem;
-  padding-bottom: 1rem;
+  margin-bottom: 1rem;
+  padding-bottom: 0.5rem;
   border-bottom: 1px solid #eee;
+}
+
+.section-devis h2 {
+  margin: 0 0 0.4rem;
+  font-size: 1.05rem;
 }
 
 .table-recap-info th {

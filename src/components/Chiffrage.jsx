@@ -65,6 +65,7 @@ export default function Chiffrage() {
   const [scenarioId, setScenarioId] = useState('')
   const [lignes, setLignes] = useState([])
   const [formateurs, setFormateurs] = useState([])
+  const [catalogue, setCatalogue] = useState([])
   const [resume, setResume] = useState(null)
 
   const [message, setMessage] = useState('')
@@ -76,6 +77,11 @@ export default function Chiffrage() {
       .from('formateurs')
       .select('id, nom, service')
       .then(({ data }) => data && setFormateurs(data))
+    supabase
+      .from('formations_catalogue')
+      .select('id, nom, jours_animation_catalogue, jours_preparation_catalogue')
+      .order('nom')
+      .then(({ data }) => data && setCatalogue(data))
   }, [])
 
   useEffect(() => {
@@ -318,8 +324,46 @@ export default function Chiffrage() {
     setLignes((prev) => [...prev, data])
   }
 
+  // Ajoute une formation choisie dans le catalogue (jours prépa/animation pré-remplis depuis l'Excel
+  // de référence), ou une ligne texte libre si aucune formation du catalogue ne correspond.
+  async function ajouterFormationCatalogue(catalogueId) {
+    if (!catalogueId) return
+    if (catalogueId === 'libre') {
+      await ajouterLigneLibre('formation')
+      return
+    }
+    const cat = catalogue.find((f) => f.id === catalogueId)
+    if (!cat) return
+    const joursPrep = cat.jours_preparation_catalogue || 0
+    const joursAnim = cat.jours_animation_catalogue || 0
+    const { data, error } = await supabase
+      .from('devis_lignes')
+      .insert({
+        demande_id: demandeId,
+        categorie: 'formation',
+        libelle: cat.nom,
+        quantite: 1,
+        jours_preparation: joursPrep,
+        nb_groupes: 1,
+        jours_animation_unitaire: joursAnim,
+        prix_unitaire: arrondi2(joursPrep * TARIF_JOUR_PREP_PV + joursAnim * TARIF_JOUR_ANIMATION_PV),
+        prix_revient: arrondi2((joursPrep + joursAnim) * TARIF_JOUR_PV_PR),
+        origine: null,
+      })
+      .select('*')
+      .single()
+    if (error) {
+      setMessage(error.message)
+      return
+    }
+    setLignes((prev) => [...prev, data])
+  }
+
+  // Toute saisie manuelle (même sur une ligne générée depuis le planning) bascule l'origine sur
+  // "Manuel" : le badge Origine doit refléter si la valeur AFFICHÉE vient du planning ou a été touchée
+  // à la main, pas seulement comment la ligne a été créée. Ça la protège aussi d'un futur "Régénérer".
   function modifierLigneLocal(id, champ, valeur) {
-    setLignes((prev) => prev.map((l) => (l.id === id ? { ...l, [champ]: valeur } : l)))
+    setLignes((prev) => prev.map((l) => (l.id === id ? { ...l, [champ]: valeur, origine: null } : l)))
   }
 
   async function persisterLigne(ligne) {
@@ -338,6 +382,7 @@ export default function Chiffrage() {
             ? null
             : Number(ligne.jours_animation_unitaire),
         commentaires: ligne.commentaires || null,
+        origine: ligne.origine,
       })
       .eq('id', ligne.id)
   }
@@ -484,27 +529,24 @@ export default function Chiffrage() {
           return (
             <section key={cat} className="section-devis">
               <h2>{CATEGORIE_LABELS[cat]}</h2>
-              {lignesCat.length === 0 ? (
-                <p className="astuce">Aucune ligne.</p>
-              ) : (
-                <div className="table-devis-scroll">
-                  <table className="table-devis">
-                    <thead>
-                      <tr>
-                        <th>Formation</th>
-                        <th>Jours prépa</th>
-                        <th>Nb groupes</th>
-                        <th>Jours animation</th>
-                        <th>Jours total</th>
-                        <th>PV HT</th>
-                        <th>PR HT</th>
-                        <th>Marge</th>
-                        <th>Commentaires</th>
-                        <th>Origine</th>
-                        <th></th>
-                      </tr>
-                    </thead>
-                    <tbody>
+              <div className="table-devis-scroll">
+                <table className="table-devis">
+                  <thead>
+                    <tr>
+                      <th>Formation</th>
+                      <th>Jours prépa</th>
+                      <th>Nb groupes</th>
+                      <th>Jours animation</th>
+                      <th>Jours total</th>
+                      <th>PV HT</th>
+                      <th>PR HT</th>
+                      <th>Marge</th>
+                      <th>Commentaires</th>
+                      <th>Origine</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
                       {lignesCat.map((l) => {
                         const joursPrep = Number(l.jours_preparation) || 0
                         const joursAnim = Number(l.jours_animation_unitaire) || 0
@@ -594,28 +636,41 @@ export default function Chiffrage() {
                           </tr>
                         )
                       })}
-                    </tbody>
-                    <tfoot>
-                      <tr>
-                        <td><strong>Sous-total {CATEGORIE_LABELS[cat]}</strong></td>
-                        <td></td>
-                        <td></td>
-                        <td></td>
-                        <td></td>
-                        <td><strong>{t.pv.toFixed(2)} €</strong></td>
-                        <td><strong>{t.pr.toFixed(2)} €</strong></td>
-                        <td><strong>{t.marge.toFixed(2)} € ({t.taux.toFixed(0)}%)</strong></td>
-                        <td></td>
-                        <td></td>
-                        <td></td>
+                      <tr className="ligne-ajout">
+                        <td colSpan={11}>
+                          <select
+                            className="select-ajout"
+                            value=""
+                            onChange={(e) => ajouterFormationCatalogue(e.target.value)}
+                          >
+                            <option value="" disabled>+ Ajouter une formation…</option>
+                            {catalogue.map((f) => (
+                              <option key={f.id} value={f.id}>{f.nom}</option>
+                            ))}
+                            <option value="libre">Autre (texte libre)</option>
+                          </select>
+                        </td>
                       </tr>
-                    </tfoot>
-                  </table>
-                </div>
-              )}
-              <button type="button" onClick={() => ajouterLigneLibre(cat)}>
-                + Ajouter une formation
-              </button>
+                    </tbody>
+                    {lignesCat.length > 0 && (
+                      <tfoot>
+                        <tr>
+                          <td><strong>Sous-total {CATEGORIE_LABELS[cat]}</strong></td>
+                          <td></td>
+                          <td></td>
+                          <td></td>
+                          <td></td>
+                          <td><strong>{t.pv.toFixed(2)} €</strong></td>
+                          <td><strong>{t.pr.toFixed(2)} €</strong></td>
+                          <td><strong>{t.marge.toFixed(2)} € ({t.taux.toFixed(0)}%)</strong></td>
+                          <td></td>
+                          <td></td>
+                          <td></td>
+                        </tr>
+                      </tfoot>
+                    )}
+                </table>
+              </div>
             </section>
           )
         }
@@ -623,25 +678,22 @@ export default function Chiffrage() {
         return (
           <section key={cat} className="section-devis">
             <h2>{CATEGORIE_LABELS[cat]}</h2>
-            {lignesCat.length === 0 ? (
-              <p className="astuce">Aucune ligne.</p>
-            ) : (
-              <div className="table-devis-scroll">
-                <table className="table-devis">
-                  <thead>
-                    <tr>
-                      <th>Libellé</th>
-                      <th>Qté</th>
-                      <th>PV unitaire HT</th>
-                      <th>PR unitaire HT</th>
-                      <th>Total PV HT</th>
-                      <th>Total PR HT</th>
-                      <th>Marge</th>
-                      <th>Origine</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody>
+            <div className="table-devis-scroll">
+              <table className="table-devis">
+                <thead>
+                  <tr>
+                    <th>Libellé</th>
+                    <th>Qté</th>
+                    <th>PV unitaire HT</th>
+                    <th>PR unitaire HT</th>
+                    <th>Total PV HT</th>
+                    <th>Total PR HT</th>
+                    <th>Marge</th>
+                    <th>Origine</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
                     {lignesCat.map((l) => {
                       const totalLignePV = Number(l.quantite || 0) * Number(l.prix_unitaire || 0)
                       const totalLignePR = Number(l.quantite || 0) * Number(l.prix_revient || 0)
@@ -699,7 +751,15 @@ export default function Chiffrage() {
                         </tr>
                       )
                     })}
-                  </tbody>
+                  <tr className="ligne-ajout">
+                    <td colSpan={9}>
+                      <button type="button" className="bouton-lien" onClick={() => ajouterLigneLibre(cat)}>
+                        + Ajouter une ligne « {CATEGORIE_LABELS[cat]} »
+                      </button>
+                    </td>
+                  </tr>
+                </tbody>
+                {lignesCat.length > 0 && (
                   <tfoot>
                     <tr>
                       <td><strong>Sous-total {CATEGORIE_LABELS[cat]}</strong></td>
@@ -713,12 +773,9 @@ export default function Chiffrage() {
                       <td></td>
                     </tr>
                   </tfoot>
-                </table>
-              </div>
-            )}
-            <button type="button" onClick={() => ajouterLigneLibre(cat)}>
-              + Ajouter une ligne « {CATEGORIE_LABELS[cat]} »
-            </button>
+                )}
+              </table>
+            </div>
           </section>
         )
       })}

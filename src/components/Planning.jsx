@@ -57,6 +57,60 @@ export default function Planning() {
   const [modaleFormateur, setModaleFormateur] = useState(null) // { creneau, valeur }
   const blocRefs = useRef({})
   const blocCopieRef = useRef(null)
+  const pileUndoRef = useRef([]) // pile de snapshots de `creneaux` avant chaque action, pour Ctrl+Z
+  const MAX_UNDO = 20
+
+  // À appeler AVANT toute mutation des créneaux (suppression, duplication, déplacement, redimensionnement,
+  // changement de formateur...) pour pouvoir y revenir avec Ctrl+Z. Ne couvre que les blocs du scénario en
+  // cours — pas les opérations sur les scénarios eux-mêmes (dupliquer/supprimer/retenir un scénario).
+  function empilerUndo() {
+    pileUndoRef.current.push(creneaux)
+    if (pileUndoRef.current.length > MAX_UNDO) pileUndoRef.current.shift()
+  }
+
+  // Réconcilie la base avec un snapshot : supprime ce qui a été ajouté depuis, remet à jour ce qui a
+  // changé (upsert par id), sans toucher aux autres scénarios.
+  async function restaurerCreneaux(snapshot) {
+    const idsSnapshot = new Set(snapshot.map((c) => c.id))
+    const idsASupprimer = creneaux.filter((c) => !idsSnapshot.has(c.id)).map((c) => c.id)
+    if (idsASupprimer.length > 0) {
+      await supabase.from('creneaux').delete().in('id', idsASupprimer)
+    }
+    if (snapshot.length > 0) {
+      await supabase.from('creneaux').upsert(
+        snapshot.map((c) => ({
+          id: c.id,
+          demande_id: demandeId,
+          demande_ligne_id: c.demande_ligne_id,
+          scenario_id: scenarioId,
+          formateur_id: c.formateur_id,
+          type: c.type,
+          date: c.date,
+          heure_debut: c.heure_debut,
+          heure_fin: c.heure_fin,
+          modifie_manuellement: c.modifie_manuellement || false,
+        })),
+      )
+    }
+    setCreneaux(snapshot)
+    if (idsSnapshot.has(blocSelectionneId)) {
+      // le bloc sélectionné existe toujours dans le snapshot, on le garde sélectionné
+    } else {
+      setBlocSelectionneId('')
+    }
+  }
+
+  async function annulerDerniereAction() {
+    const snapshot = pileUndoRef.current.pop()
+    if (!snapshot) {
+      setMessage('Rien à annuler.')
+      return
+    }
+    setMessage('')
+    setSucces('')
+    await restaurerCreneaux(snapshot)
+    setSucces('Dernière action annulée (Ctrl+Z).')
+  }
 
   function heureFinDurantRedimensionnement(creneau, hauteurPx) {
     const duree = Math.max(0.5, Math.round((hauteurPx / HOUR_HEIGHT) * 2) / 2)
@@ -168,11 +222,14 @@ export default function Planning() {
       } else if (touche === 'v' && blocCopieRef.current) {
         e.preventDefault()
         dupliquerBloc(blocCopieRef.current)
+      } else if (touche === 'z') {
+        e.preventDefault()
+        annulerDerniereAction()
       }
     }
     window.addEventListener('keydown', surTouche)
     return () => window.removeEventListener('keydown', surTouche)
-  }, [creneaux, blocSelectionneId])
+  }, [creneaux, blocSelectionneId, scenarioId, demandeId])
 
   // Ferme le menu contextuel dès qu'on clique ailleurs (le menu lui-même arrête la propagation).
   useEffect(() => {
@@ -508,6 +565,9 @@ export default function Planning() {
   }
 
   async function chargerScenario(id) {
+    // Ne vide la pile d'annulation que si on change réellement de scénario — un rechargement du même
+    // scénario (ex. après "Régénérer le planning") ne doit pas empêcher d'annuler ce qui vient d'être fait.
+    if (id !== scenarioId) pileUndoRef.current = []
     setScenarioId(id)
     setNomCopie('')
     setConfirmerSuppressionScenario(false)
@@ -532,6 +592,7 @@ export default function Planning() {
     setConfirmerRegeneration(false)
     setMessage('')
     setSucces('')
+    empilerUndo()
     await supabase.from('creneaux').delete().eq('scenario_id', scenarioId)
     await genererPlanningParDefaut(demandeId, scenarioId, lignes)
     await chargerScenario(scenarioId)
@@ -605,6 +666,7 @@ export default function Planning() {
   }
 
   async function supprimerBloc(id) {
+    empilerUndo()
     if (blocSelectionneId === id) setBlocSelectionneId('')
     // Retire le bloc de l'état local tout de suite : sans ça, seuls les blocs "Déplacement" sont
     // rafraîchis par finaliserMutation, et le bloc supprimé (une formation) restait affiché à l'écran
@@ -616,6 +678,7 @@ export default function Planning() {
 
   // Duplique un bloc (formation ou déplacement) le jour suivant, à glisser ensuite où besoin.
   async function dupliquerBloc(creneau) {
+    empilerUndo()
     setMessage('')
     setSucces('')
     const indexActuel = jours.findIndex((j) => formatDate(j) === creneau.date)
@@ -647,6 +710,7 @@ export default function Planning() {
     if (!demandeLigneId) return
     const idsASupprimer = creneaux.filter((c) => c.demande_ligne_id === demandeLigneId).map((c) => c.id)
     if (idsASupprimer.length === 0) return
+    empilerUndo()
     if (idsASupprimer.includes(blocSelectionneId)) setBlocSelectionneId('')
     setCreneaux((prev) => prev.filter((c) => !idsASupprimer.includes(c.id)))
     await supabase.from('creneaux').delete().in('id', idsASupprimer)
@@ -662,6 +726,7 @@ export default function Planning() {
     setSucces('')
     const blocsFormation = creneaux.filter((c) => c.demande_ligne_id === creneau.demande_ligne_id)
     if (blocsFormation.length === 0) return
+    empilerUndo()
 
     const datesTriees = [...new Set(blocsFormation.map((b) => b.date))].sort()
     const mappingDates = {}
@@ -711,6 +776,7 @@ export default function Planning() {
       setMessage(conflit)
       return
     }
+    empilerUndo()
     setMessage('')
     setCreneaux((prev) =>
       prev.map((c) => (c.id === creneau.id ? { ...c, formateur_id: nouveauFormateurId } : c)),
@@ -777,6 +843,7 @@ export default function Planning() {
 
     if (nouvelleDate === creneau.date && nouvelleHeureDebut === creneau.heure_debut) return
 
+    empilerUndo()
     setMessage('')
     setCreneaux((prev) =>
       prev.map((c) =>
@@ -821,6 +888,7 @@ export default function Planning() {
 
     if (nouvelleHeureFin === creneau.heure_fin) return
 
+    empilerUndo()
     setMessage('')
     setCreneaux((prev) => prev.map((c) => (c.id === creneau.id ? { ...c, heure_fin: nouvelleHeureFin } : c)))
 
@@ -868,6 +936,7 @@ export default function Planning() {
       }
     }
 
+    empilerUndo()
     setMessage('')
     const idsFreres = new Set(freres.map((f) => f.id))
     setCreneaux((prev) => prev.map((c) => (idsFreres.has(c.id) ? { ...c, formateur_id: nouveauFormateurId } : c)))
@@ -880,6 +949,10 @@ export default function Planning() {
   // appliquée directement sur le DOM via une ref, sans passer par React — donc parfaitement fluide
   // et sans aucun décalage possible avec la souris. On ne recalcule/persiste qu'au relâchement.
   function demarrerGlisser(e, c, pos) {
+    // Seul le clic GAUCHE démarre un glisser. Sans cette garde, le clic droit déclenchait aussi
+    // preventDefault() ici, ce qui annule l'événement "contextmenu" natif dans certains navigateurs
+    // (Firefox notamment) — le menu contextuel ne s'ouvrait donc jamais.
+    if (e.button !== 0) return
     if (e.target.closest('.planning-bloc-select, .planning-bloc-supprimer, .planning-bloc-poignee')) return
     e.preventDefault()
     const node = blocRefs.current[c.id]
@@ -1054,7 +1127,7 @@ export default function Planning() {
 
           <p className="astuce">
             Un planning de départ a été généré automatiquement. Glissez un bloc de formation pour changer de jour/horaire, étirez le bord bas pour changer la durée, ou changez le formateur via le menu dans le bloc.
-            Clic droit sur un bloc pour supprimer/dupliquer la formation entière, changer le formateur ou renseigner les participants.
+            Clic droit sur un bloc pour supprimer/dupliquer la formation entière, changer le formateur ou renseigner les participants. Ctrl+Z annule la dernière action (déplacement, suppression, duplication...).
             Les blocs « Déplacement » (gris, avant/après chaque mission) sont recalculés automatiquement, vous n'avez pas à les toucher.
           </p>
 
