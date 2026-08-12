@@ -52,6 +52,9 @@ export default function Planning() {
   const [confirmerRegeneration, setConfirmerRegeneration] = useState(false)
   const [redimensionnementEnCours, setRedimensionnementEnCours] = useState(null)
   const [blocSelectionneId, setBlocSelectionneId] = useState('')
+  const [menuContextuel, setMenuContextuel] = useState(null) // { x, y, creneau }
+  const [modaleParticipants, setModaleParticipants] = useState(null) // { ligneId, valeur }
+  const [modaleFormateur, setModaleFormateur] = useState(null) // { creneau, valeur }
   const blocRefs = useRef({})
   const blocCopieRef = useRef(null)
 
@@ -139,6 +142,11 @@ export default function Planning() {
   // (dupliqué le lendemain, à glisser ensuite où besoin), Suppr/Retour arrière le supprime.
   useEffect(() => {
     function surTouche(e) {
+      if (e.key === 'Escape') {
+        setMenuContextuel(null)
+        setModaleParticipants(null)
+        return
+      }
       const balise = document.activeElement?.tagName
       if (balise === 'INPUT' || balise === 'SELECT' || balise === 'TEXTAREA') return
       if (e.key === 'Delete' || e.key === 'Backspace') {
@@ -165,6 +173,20 @@ export default function Planning() {
     window.addEventListener('keydown', surTouche)
     return () => window.removeEventListener('keydown', surTouche)
   }, [creneaux, blocSelectionneId])
+
+  // Ferme le menu contextuel dès qu'on clique ailleurs (le menu lui-même arrête la propagation).
+  useEffect(() => {
+    if (!menuContextuel) return
+    function fermer() {
+      setMenuContextuel(null)
+    }
+    window.addEventListener('mousedown', fermer)
+    window.addEventListener('contextmenu', fermer)
+    return () => {
+      window.removeEventListener('mousedown', fermer)
+      window.removeEventListener('contextmenu', fermer)
+    }
+  }, [menuContextuel])
 
   useEffect(() => {
     if (demandeId && formateurs.length === 0) return // attend le chargement des formateurs
@@ -619,6 +641,106 @@ export default function Planning() {
     await chargerScenario(scenarioId)
   }
 
+  // Supprime TOUS les blocs d'une même formation (tous les jours d'un même groupe), pas juste celui
+  // sur lequel on a cliqué.
+  async function supprimerFormation(demandeLigneId) {
+    if (!demandeLigneId) return
+    const idsASupprimer = creneaux.filter((c) => c.demande_ligne_id === demandeLigneId).map((c) => c.id)
+    if (idsASupprimer.length === 0) return
+    if (idsASupprimer.includes(blocSelectionneId)) setBlocSelectionneId('')
+    setCreneaux((prev) => prev.filter((c) => !idsASupprimer.includes(c.id)))
+    await supabase.from('creneaux').delete().in('id', idsASupprimer)
+    await finaliserMutation()
+    setSucces('Formation supprimée.')
+  }
+
+  // Duplique tous les blocs d'une même formation (tous les jours d'un même groupe) d'un coup, en
+  // conservant les écarts entre jours d'origine, positionnés juste après le dernier jour existant.
+  async function dupliquerFormationEntiere(creneau) {
+    if (!creneau.demande_ligne_id) return
+    setMessage('')
+    setSucces('')
+    const blocsFormation = creneaux.filter((c) => c.demande_ligne_id === creneau.demande_ligne_id)
+    if (blocsFormation.length === 0) return
+
+    const datesTriees = [...new Set(blocsFormation.map((b) => b.date))].sort()
+    const mappingDates = {}
+    let curseur = jourOuvreSuivant(parseDate(datesTriees[datesTriees.length - 1]))
+    for (const d of datesTriees) {
+      mappingDates[d] = formatDate(curseur)
+      curseur = jourOuvreSuivant(curseur)
+    }
+
+    const { error } = await supabase.from('creneaux').insert(
+      blocsFormation.map((c) => ({
+        demande_id: demandeId,
+        demande_ligne_id: c.demande_ligne_id,
+        scenario_id: scenarioId,
+        formateur_id: c.formateur_id,
+        type: c.type,
+        date: mappingDates[c.date],
+        heure_debut: c.heure_debut,
+        heure_fin: c.heure_fin,
+      })),
+    )
+    if (error) {
+      setMessage(error.message)
+      return
+    }
+    await synchroniserDeplacements(scenarioId, demandeId)
+    await chargerScenario(scenarioId)
+    setSucces(`Formation dupliquée sur ${datesTriees.length} jour(s), à partir du ${mappingDates[datesTriees[0]]}.`)
+  }
+
+  // Change le formateur d'un créneau : pour une formation, s'applique à tous les blocs de la même
+  // formation (comme le menu déroulant déjà présent sur le bloc) ; pour un déplacement, seulement ce
+  // bloc-là (marqué comme modifié à la main pour ne pas être écrasé par la prochaine synchronisation).
+  async function changerFormateurCreneau(creneau, nouveauFormateurId) {
+    if (creneau.type === 'formation') {
+      await changerFormateurBloc(creneau, nouveauFormateurId)
+      return
+    }
+    const conflit = await conflitAvecPlanningsRetenus(
+      nouveauFormateurId,
+      creneau.date,
+      creneau.heure_debut,
+      creneau.heure_fin,
+      creneau.id,
+    )
+    if (conflit) {
+      setMessage(conflit)
+      return
+    }
+    setMessage('')
+    setCreneaux((prev) =>
+      prev.map((c) => (c.id === creneau.id ? { ...c, formateur_id: nouveauFormateurId } : c)),
+    )
+    await supabase
+      .from('creneaux')
+      .update({ formateur_id: nouveauFormateurId, modifie_manuellement: true })
+      .eq('id', creneau.id)
+  }
+
+  async function enregistrerFormateur() {
+    if (!modaleFormateur) return
+    await changerFormateurCreneau(modaleFormateur.creneau, modaleFormateur.valeur)
+    setModaleFormateur(null)
+  }
+
+  async function enregistrerParticipants() {
+    if (!modaleParticipants) return
+    const { ligneId, valeur } = modaleParticipants
+    const nb = Math.max(1, Number(valeur) || 1)
+    const { error } = await supabase.from('demande_lignes').update({ nb_participants: nb }).eq('id', ligneId)
+    if (error) {
+      setMessage(error.message)
+      return
+    }
+    setLignes((prev) => prev.map((l) => (l.id === ligneId ? { ...l, nb_participants: nb } : l)))
+    setModaleParticipants(null)
+    setSucces('Nombre de participants enregistré.')
+  }
+
   async function conflitAvecPlanningsRetenus(formateurId, date, heureDebut, heureFin, excluCreneauId) {
     const chevauche = (c) =>
       c.id !== excluCreneauId &&
@@ -932,6 +1054,7 @@ export default function Planning() {
 
           <p className="astuce">
             Un planning de départ a été généré automatiquement. Glissez un bloc de formation pour changer de jour/horaire, étirez le bord bas pour changer la durée, ou changez le formateur via le menu dans le bloc.
+            Clic droit sur un bloc pour supprimer/dupliquer la formation entière, changer le formateur ou renseigner les participants.
             Les blocs « Déplacement » (gris, avant/après chaque mission) sont recalculés automatiquement, vous n'avez pas à les toucher.
           </p>
 
@@ -994,6 +1117,11 @@ export default function Planning() {
                       ...(estFormation ? { background: couleur } : { borderColor: couleur }),
                     }}
                     onMouseDown={(e) => demarrerGlisser(e, c, pos)}
+                    onContextMenu={(e) => {
+                      e.preventDefault()
+                      setBlocSelectionneId(c.id)
+                      setMenuContextuel({ x: e.clientX, y: e.clientY, creneau: c })
+                    }}
                   >
                     {estFormation && (
                       <button
@@ -1053,6 +1181,101 @@ export default function Planning() {
               })}
             </div>
           </div>
+
+          {menuContextuel && (
+            <div
+              className="menu-contextuel"
+              style={{ left: menuContextuel.x, top: menuContextuel.y }}
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <button type="button" onClick={() => { supprimerBloc(menuContextuel.creneau.id); setMenuContextuel(null) }}>
+                Supprimer le bloc
+              </button>
+              {menuContextuel.creneau.type === 'formation' && (
+                <button
+                  type="button"
+                  onClick={() => { supprimerFormation(menuContextuel.creneau.demande_ligne_id); setMenuContextuel(null) }}
+                >
+                  Supprimer la formation
+                </button>
+              )}
+              <button type="button" onClick={() => { dupliquerBloc(menuContextuel.creneau); setMenuContextuel(null) }}>
+                Dupliquer le bloc
+              </button>
+              {menuContextuel.creneau.type === 'formation' && (
+                <button
+                  type="button"
+                  onClick={() => { dupliquerFormationEntiere(menuContextuel.creneau); setMenuContextuel(null) }}
+                >
+                  Dupliquer la formation
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setModaleFormateur({ creneau: menuContextuel.creneau, valeur: menuContextuel.creneau.formateur_id })
+                  setMenuContextuel(null)
+                }}
+              >
+                Changer le formateur
+              </button>
+              {menuContextuel.creneau.type === 'formation' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const ligne = lignes.find((l) => l.id === menuContextuel.creneau.demande_ligne_id)
+                    setModaleParticipants({
+                      ligneId: menuContextuel.creneau.demande_ligne_id,
+                      valeur: ligne?.nb_participants || 1,
+                    })
+                    setMenuContextuel(null)
+                  }}
+                >
+                  Renseigner les participants
+                </button>
+              )}
+            </div>
+          )}
+
+          {modaleParticipants && (
+            <div className="modale-fond" onMouseDown={() => setModaleParticipants(null)}>
+              <div className="modale-contenu" onMouseDown={(e) => e.stopPropagation()}>
+                <h3>Nombre de participants</h3>
+                <input
+                  type="number"
+                  min="1"
+                  value={modaleParticipants.valeur}
+                  onChange={(e) => setModaleParticipants((prev) => ({ ...prev, valeur: e.target.value }))}
+                  autoFocus
+                />
+                <div className="modale-actions">
+                  <button type="button" onClick={() => setModaleParticipants(null)}>Annuler</button>
+                  <button type="button" onClick={enregistrerParticipants}>Enregistrer</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {modaleFormateur && (
+            <div className="modale-fond" onMouseDown={() => setModaleFormateur(null)}>
+              <div className="modale-contenu" onMouseDown={(e) => e.stopPropagation()}>
+                <h3>Changer le formateur</h3>
+                <select
+                  value={modaleFormateur.valeur}
+                  onChange={(e) => setModaleFormateur((prev) => ({ ...prev, valeur: e.target.value }))}
+                  autoFocus
+                >
+                  {formateurs.map((f) => (
+                    <option key={f.id} value={f.id}>{f.nom}</option>
+                  ))}
+                </select>
+                <div className="modale-actions">
+                  <button type="button" onClick={() => setModaleFormateur(null)}>Annuler</button>
+                  <button type="button" onClick={enregistrerFormateur}>Enregistrer</button>
+                </div>
+              </div>
+            </div>
+          )}
         </>
       )}
     </div>

@@ -414,3 +414,68 @@
   background: #eaf1fb;
   color: #2e5c8a;
 }
+
+.menu-contextuel {
+  position: fixed;
+  z-index: 20;
+  background: #fff;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  padding: 0.3rem;
+  display: flex;
+  flex-direction: column;
+  min-width: 220px;
+}
+
+.menu-contextuel button {
+  background: none;
+  border: none;
+  text-align: left;
+  padding: 0.5rem 0.6rem;
+  cursor: pointer;
+  font-size: 0.85rem;
+  border-radius: 4px;
+  color: #222;
+}
+
+.menu-contextuel button:hover {
+  background: #f0f4fa;
+}
+
+.modale-fond {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 30;
+}
+
+.modale-contenu {
+  background: #fff;
+  border-radius: 8px;
+  padding: 1.25rem;
+  min-width: 280px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+}
+
+.modale-contenu h3 {
+  margin-top: 0;
+}
+
+.modale-contenu input,
+.modale-contenu select {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.4rem;
+  margin-top: 0.5rem;
+}
+
+.modale-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
