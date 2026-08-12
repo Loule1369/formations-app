@@ -16,10 +16,10 @@ function ligneVide() {
   return { formationId: '', nbParticipants: 1, nbGroupes: 1 }
 }
 
-// Même arrondi que le fichier Excel de référence pour convertir des heures en "jours" (au quart de
-// jour le plus proche, base 7h) : voir colonnes K/L de l'onglet ACTIF.
-function arrondiQuartJour(heures) {
-  return Math.round((heures / 7) * 4) / 4
+// Conversion heures → jours pour le chiffrage : un palier par demi-journée de 4h, arrondi au-dessus
+// (6h/7h/8h = 1 jour, 9-12h = 1,5 jour, 13-16h = 2 jours...).
+function heuresEnJours(heures) {
+  return Math.ceil(heures / 4) * 0.5
 }
 
 export default function ExpressionBesoin() {
@@ -103,8 +103,8 @@ export default function ExpressionBesoin() {
         nom: nom.trim(),
         duree_h: dureeH,
         duree_prep_h: dureePrepH,
-        jours_animation_catalogue: arrondiQuartJour(dureeH),
-        jours_preparation_catalogue: arrondiQuartJour(dureePrepH),
+        jours_animation_catalogue: heuresEnJours(dureeH),
+        jours_preparation_catalogue: heuresEnJours(dureePrepH),
       })
       .select('id, code, nom, duree_h, prix')
       .single()

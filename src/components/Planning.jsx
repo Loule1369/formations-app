@@ -451,7 +451,14 @@ export default function Planning() {
     let finJourCourant = null
     const blocs = []
 
-    for (const ligne of lignesData) {
+    // Les formations ne sont pas casées dans l'ordre où elles ont été demandées dans l'expression de
+    // besoin : les plus longues d'abord permettent de remplir des journées/semaines complètes, les plus
+    // courtes viennent ensuite combler les jours restants (et profiter de l'enchaînement l'après-midi).
+    const lignesTriees = [...lignesData].sort(
+      (a, b) => (b.formations_catalogue?.duree_h || 0) - (a.formations_catalogue?.duree_h || 0),
+    )
+
+    for (const ligne of lignesTriees) {
       const formateur = trouverFormateurPourCode(ligne.formations_catalogue?.code)
       const dureeTotale = ligne.formations_catalogue?.duree_h || 4
 

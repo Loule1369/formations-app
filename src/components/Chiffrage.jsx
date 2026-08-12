@@ -159,12 +159,11 @@ export default function Chiffrage() {
   async function chargerResume() {
     const { data } = await supabase
       .from('demandes')
-      .select('remise_pv, remise_pr, arrondi_pv, arrondi_pr')
+      .select('remise_pv, arrondi_pv, arrondi_pr')
       .eq('id', demandeId)
       .single()
     setResume({
-      remisePv: data?.remise_pv || 0,
-      remisePr: data?.remise_pr || 0,
+      remisePv: data?.remise_pv || 0, // pourcentage de remise (pas un montant)
       arrondiPv: data?.arrondi_pv || 0,
       arrondiPr: data?.arrondi_pr || 0,
     })
@@ -489,11 +488,13 @@ export default function Chiffrage() {
   }
 
   async function sauvegarderRemiseArrondi() {
+    // remise_pv stocke le POURCENTAGE de remise (pas un montant) ; remise_pr n'est plus utilisé (la
+    // remise ne s'applique qu'au PV) mais reste à 0 pour ne pas laisser une vieille valeur incohérente.
     await supabase
       .from('demandes')
       .update({
         remise_pv: Number(resume?.remisePv) || 0,
-        remise_pr: Number(resume?.remisePr) || 0,
+        remise_pr: 0,
         arrondi_pv: Number(resume?.arrondiPv) || 0,
         arrondi_pr: Number(resume?.arrondiPr) || 0,
       })
@@ -547,10 +548,12 @@ export default function Chiffrage() {
   ]
   const sousTotalPv = lignesRecap.reduce((s, l) => s + l.pv, 0)
   const sousTotalPr = lignesRecap.reduce((s, l) => s + l.pr, 0)
-  const remisePv = Number(resume?.remisePv) || 0
-  const remisePr = Number(resume?.remisePr) || 0
-  const totalPv = sousTotalPv - remisePv
-  const totalPr = sousTotalPr - remisePr
+  // La remise est un pourcentage appliqué au PV uniquement (le PR/coût de revient ne bouge pas), ce qui
+  // fait mécaniquement baisser la marge — comme une vraie remise commerciale.
+  const remisePourcentage = Number(resume?.remisePv) || 0
+  const remiseMontantPv = arrondi2(sousTotalPv * (remisePourcentage / 100))
+  const totalPv = sousTotalPv - remiseMontantPv
+  const totalPr = sousTotalPr
 
   return (
     <div className="page page-large">
@@ -731,7 +734,7 @@ export default function Chiffrage() {
                     )
                   })}
                   <tr className="ligne-ajout">
-                    <td colSpan={11}>
+                    <td>
                       {estFormation && (
                         <select
                           className="select-ajout"
@@ -764,6 +767,7 @@ export default function Chiffrage() {
                         </button>
                       )}
                     </td>
+                    <td colSpan={10}></td>
                   </tr>
                   {lignesCat.length > 0 && (
                     <tr className="ligne-sous-total">
@@ -792,59 +796,80 @@ export default function Chiffrage() {
 
         <div className="table-devis-scroll">
           <table className="table-devis table-recap-financier">
-            <thead>
-              <tr>
-                <th>Libellé</th>
-                <th>PV HT</th>
-                <th>PR HT</th>
-                <th>Marge</th>
-              </tr>
-            </thead>
             <tbody>
               {lignesRecap.map((l) => (
                 <tr key={l.libelle}>
                   <td>{l.libelle}</td>
+                  <td></td>
+                  <td></td>
+                  <td></td>
+                  <td></td>
                   <td>{l.pv.toFixed(2)} €</td>
                   <td>{l.pr.toFixed(2)} €</td>
                   <td>{margeTaux(l.pv, l.pr).toFixed(0)}%</td>
+                  <td></td>
+                  <td></td>
+                  <td></td>
                 </tr>
               ))}
               <tr className="ligne-forte">
                 <td><strong>Sous-total</strong></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
                 <td><strong>{sousTotalPv.toFixed(2)} €</strong></td>
                 <td><strong>{sousTotalPr.toFixed(2)} €</strong></td>
                 <td><strong>{margeTaux(sousTotalPv, sousTotalPr).toFixed(0)}%</strong></td>
+                <td></td>
+                <td></td>
+                <td></td>
               </tr>
               <tr>
                 <td>Remise</td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
                 <td>
-                  <input
-                    type="number"
-                    step="0.01"
-                    value={resume?.remisePv ?? 0}
-                    onChange={(e) => modifierResumeLocal('remisePv', e.target.value)}
-                    onBlur={sauvegarderRemiseArrondi}
-                  />
+                  <span className="input-pourcentage">
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="0"
+                      max="100"
+                      value={resume?.remisePv ?? 0}
+                      onChange={(e) => modifierResumeLocal('remisePv', e.target.value)}
+                      onBlur={sauvegarderRemiseArrondi}
+                    />
+                    <span>%</span>
+                  </span>
                 </td>
-                <td>
-                  <input
-                    type="number"
-                    step="0.01"
-                    value={resume?.remisePr ?? 0}
-                    onChange={(e) => modifierResumeLocal('remisePr', e.target.value)}
-                    onBlur={sauvegarderRemiseArrondi}
-                  />
-                </td>
+                <td>—</td>
+                <td>-{remiseMontantPv.toFixed(2)} €</td>
+                <td></td>
+                <td></td>
                 <td></td>
               </tr>
               <tr className="ligne-forte">
                 <td><strong>Total</strong></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
                 <td><strong>{totalPv.toFixed(2)} €</strong></td>
                 <td><strong>{totalPr.toFixed(2)} €</strong></td>
                 <td><strong>{margeTaux(totalPv, totalPr).toFixed(0)}%</strong></td>
+                <td></td>
+                <td></td>
+                <td></td>
               </tr>
               <tr>
                 <td>Arrondi</td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
                 <td>
                   <input
                     type="number"
@@ -863,6 +888,9 @@ export default function Chiffrage() {
                     onBlur={sauvegarderRemiseArrondi}
                   />
                 </td>
+                <td></td>
+                <td></td>
+                <td></td>
                 <td></td>
               </tr>
             </tbody>

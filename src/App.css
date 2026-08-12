@@ -315,14 +315,30 @@
   overflow-x: auto;
 }
 
+/* Largeurs de colonnes fixes et partagées entre le tableau principal (11 colonnes : Libellé, Jours
+   prépa, Nb groupes, Jours animation, Jours total, PV, PR, Marge, Commentaires, Origine, action) et le
+   tableau du récapitulatif (mêmes positions de colonnes, la plupart vides) — table-layout: fixed
+   garantit que les colonnes PV/PR/Marge tombent exactement à la même verticale dans les deux tableaux. */
 .table-devis {
-  width: 100%;
-  min-width: 1000px;
+  table-layout: fixed;
+  width: 1380px;
   border-collapse: collapse;
   margin: 0.5rem 0;
   font-family: system-ui, sans-serif;
   font-size: 0.85rem;
 }
+
+.table-devis th:nth-child(1), .table-devis td:nth-child(1) { width: 420px; }
+.table-devis th:nth-child(2), .table-devis td:nth-child(2) { width: 90px; }
+.table-devis th:nth-child(3), .table-devis td:nth-child(3) { width: 90px; }
+.table-devis th:nth-child(4), .table-devis td:nth-child(4) { width: 100px; }
+.table-devis th:nth-child(5), .table-devis td:nth-child(5) { width: 90px; }
+.table-devis th:nth-child(6), .table-devis td:nth-child(6) { width: 100px; }
+.table-devis th:nth-child(7), .table-devis td:nth-child(7) { width: 100px; }
+.table-devis th:nth-child(8), .table-devis td:nth-child(8) { width: 80px; }
+.table-devis th:nth-child(9), .table-devis td:nth-child(9) { width: 180px; }
+.table-devis th:nth-child(10), .table-devis td:nth-child(10) { width: 90px; }
+.table-devis th:nth-child(11), .table-devis td:nth-child(11) { width: 40px; }
 
 .table-devis th,
 .table-devis td {
@@ -330,6 +346,8 @@
   padding: 0.25rem 0.4rem;
   text-align: left;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .table-devis input {
@@ -340,21 +358,29 @@
   color: inherit;
 }
 
-.table-devis input[type='number'] {
-  width: 6rem;
-}
-
-.table-devis .input-libelle {
-  min-width: 420px;
-}
-
-.table-devis .input-commentaires {
-  min-width: 180px;
+.table-devis .select-ajout {
+  width: 100%;
 }
 
 .table-recap-financier .ligne-forte td {
   border-top: 2px solid #ccc;
   background: #fafafa;
+}
+
+.table-recap-financier td:first-child {
+  text-align: right;
+  padding-right: 1rem;
+}
+
+.input-pourcentage {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.input-pourcentage input {
+  width: 4rem;
+  flex: none;
 }
 
 .table-devis tfoot td {
@@ -403,7 +429,7 @@
   color: #2e5c8a;
   cursor: pointer;
   font: inherit;
-  min-width: 420px;
+  box-sizing: border-box;
 }
 
 .section-devis {
