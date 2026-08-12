@@ -57,14 +57,20 @@ export default function Planning() {
   const [modaleFormateur, setModaleFormateur] = useState(null) // { creneau, valeur }
   const blocRefs = useRef({})
   const blocCopieRef = useRef(null)
-  const pileUndoRef = useRef([]) // pile de snapshots de `creneaux` avant chaque action, pour Ctrl+Z
+  // Pile d'actions annulables avec Ctrl+Z : { type: 'creneaux', creneaux } avant une mutation de blocs,
+  // ou { type: 'participants', ligneId, valeur } avec l'ANCIENNE valeur avant une modification du
+  // nombre de participants. Ne couvre pas les opérations sur les scénarios eux-mêmes (dupliquer/
+  // supprimer/retenir un scénario).
+  const pileUndoRef = useRef([])
   const MAX_UNDO = 20
 
-  // À appeler AVANT toute mutation des créneaux (suppression, duplication, déplacement, redimensionnement,
-  // changement de formateur...) pour pouvoir y revenir avec Ctrl+Z. Ne couvre que les blocs du scénario en
-  // cours — pas les opérations sur les scénarios eux-mêmes (dupliquer/supprimer/retenir un scénario).
   function empilerUndo() {
-    pileUndoRef.current.push(creneaux)
+    pileUndoRef.current.push({ type: 'creneaux', creneaux })
+    if (pileUndoRef.current.length > MAX_UNDO) pileUndoRef.current.shift()
+  }
+
+  function empilerUndoParticipants(ligneId, ancienneValeur) {
+    pileUndoRef.current.push({ type: 'participants', ligneId, valeur: ancienneValeur })
     if (pileUndoRef.current.length > MAX_UNDO) pileUndoRef.current.shift()
   }
 
@@ -100,15 +106,24 @@ export default function Planning() {
     }
   }
 
+  async function restaurerParticipants(ligneId, ancienneValeur) {
+    await supabase.from('demande_lignes').update({ nb_participants: ancienneValeur }).eq('id', ligneId)
+    setLignes((prev) => prev.map((l) => (l.id === ligneId ? { ...l, nb_participants: ancienneValeur } : l)))
+  }
+
   async function annulerDerniereAction() {
-    const snapshot = pileUndoRef.current.pop()
-    if (!snapshot) {
+    const action = pileUndoRef.current.pop()
+    if (!action) {
       setMessage('Rien à annuler.')
       return
     }
     setMessage('')
     setSucces('')
-    await restaurerCreneaux(snapshot)
+    if (action.type === 'participants') {
+      await restaurerParticipants(action.ligneId, action.valeur)
+    } else {
+      await restaurerCreneaux(action.creneaux)
+    }
     setSucces('Dernière action annulée (Ctrl+Z).')
   }
 
@@ -797,6 +812,8 @@ export default function Planning() {
     if (!modaleParticipants) return
     const { ligneId, valeur } = modaleParticipants
     const nb = Math.max(1, Number(valeur) || 1)
+    const ancienneValeur = lignes.find((l) => l.id === ligneId)?.nb_participants || 1
+    if (nb !== ancienneValeur) empilerUndoParticipants(ligneId, ancienneValeur)
     const { error } = await supabase.from('demande_lignes').update({ nb_participants: nb }).eq('id', ligneId)
     if (error) {
       setMessage(error.message)
