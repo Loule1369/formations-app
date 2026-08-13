@@ -9,6 +9,10 @@ const WINDOW_END = 22
 const COL_HEIGHT = HOUR_HEIGHT * (WINDOW_END - WINDOW_START)
 const DAY_WIDTH = 170
 const HEADER_HEIGHT = 44
+// Espace tampon entre l'en-tête collant (jours de la semaine, toujours fixé en haut de la zone
+// visible) et la 1ère heure (7h) : sans lui, la ligne de 7h est en permanence masquée derrière l'en-tête
+// collant, quel que soit le défilement — impossible d'y accéder même en scrollant complètement en haut.
+const TOP_BUFFER = 20
 const LEFT_COL_WIDTH = 52
 const DAYS_SHOWN = 21
 const DUREE_DEPLACEMENT = 3
@@ -259,7 +263,7 @@ export default function Planning() {
         for (const bloc of groupe) {
           positions[bloc.id] = {
             x: xJour + laneDeBloc[bloc.id] * largeur,
-            y: HEADER_HEIGHT + (heureEnDecimal(bloc.heure_debut) - WINDOW_START) * HOUR_HEIGHT,
+            y: HEADER_HEIGHT + TOP_BUFFER + (heureEnDecimal(bloc.heure_debut) - WINDOW_START) * HOUR_HEIGHT,
             width: largeur - 3,
             height: dureeHeures(bloc.heure_debut, bloc.heure_fin) * HOUR_HEIGHT - 3,
           }
@@ -990,7 +994,7 @@ export default function Planning() {
   async function deplacerBloc(creneau, xAbs, yAbs) {
     const jourIndex = Math.min(Math.max(Math.round((xAbs - LEFT_COL_WIDTH) / DAY_WIDTH), 0), DAYS_SHOWN - 1)
     const duree = dureeHeures(creneau.heure_debut, creneau.heure_fin)
-    const heureBrute = WINDOW_START + (yAbs - HEADER_HEIGHT) / HOUR_HEIGHT
+    const heureBrute = WINDOW_START + (yAbs - HEADER_HEIGHT - TOP_BUFFER) / HOUR_HEIGHT
     const heureDebutSnap = Math.min(Math.max(Math.round(heureBrute * 2) / 2, WINDOW_START), WINDOW_END - duree)
     const nouvelleDate = formatDate(jours[jourIndex])
     const nouvelleHeureDebut = decimalEnHeure(heureDebutSnap)
@@ -1296,7 +1300,7 @@ export default function Planning() {
               className="planning-inner"
               style={{
                 width: LEFT_COL_WIDTH + DAYS_SHOWN * DAY_WIDTH,
-                height: HEADER_HEIGHT + COL_HEIGHT,
+                height: HEADER_HEIGHT + TOP_BUFFER + COL_HEIGHT,
               }}
               onMouseDown={(e) => {
                 if (e.target === e.currentTarget) setBlocSelectionneId('')
@@ -1314,7 +1318,12 @@ export default function Planning() {
                   </div>
                   <div
                     className="planning-colonne-jour"
-                    style={{ left: LEFT_COL_WIDTH + i * DAY_WIDTH, top: HEADER_HEIGHT, width: DAY_WIDTH, height: COL_HEIGHT }}
+                    style={{
+                      left: LEFT_COL_WIDTH + i * DAY_WIDTH,
+                      top: HEADER_HEIGHT + TOP_BUFFER,
+                      width: DAY_WIDTH,
+                      height: COL_HEIGHT,
+                    }}
                   />
                 </div>
               ))}
@@ -1323,7 +1332,7 @@ export default function Planning() {
                 <div
                   key={h}
                   className="planning-heure-repere"
-                  style={{ top: HEADER_HEIGHT + (h - WINDOW_START) * HOUR_HEIGHT, width: LEFT_COL_WIDTH }}
+                  style={{ top: HEADER_HEIGHT + TOP_BUFFER + (h - WINDOW_START) * HOUR_HEIGHT, width: LEFT_COL_WIDTH }}
                 >
                   {h}h
                 </div>
