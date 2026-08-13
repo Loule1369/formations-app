@@ -172,10 +172,11 @@
 }
 
 .planning-scroll {
+  /* Un seul axe de défilement imbriqué (horizontal, la grille est bien plus large que haute) : un
+     conteneur qui défile aussi verticalement peut entrer en concurrence avec le défilement de la page
+     sur trackpad (geste à 2 doigts), l'un "volant" l'autre selon le navigateur. Le défilement vertical
+     reste donc porté par la page entière, sans ambiguïté d'axe. */
   overflow-x: auto;
-  overflow-y: auto;
-  max-height: calc(100vh - 260px);
-  min-height: 300px;
   border: 1px solid #ddd;
   border-radius: 6px;
   margin-bottom: 2rem;

@@ -707,11 +707,30 @@ export default function Planning() {
     setSucces('Planning régénéré avec les règles actuelles.')
   }
 
+  // Prochaine lettre "Option X" pas encore utilisée pour cette demande (A, B, C...), pour proposer un
+  // nom par défaut cohérent à chaque duplication plutôt que de toujours répéter "(copie)".
+  function prochainNomOption() {
+    const lettresUtilisees = new Set(
+      scenarios.map((s) => /^Option ([A-Z])$/.exec(s.nom)?.[1]).filter(Boolean),
+    )
+    for (let code = 65; code <= 90; code++) {
+      const lettre = String.fromCharCode(code)
+      if (!lettresUtilisees.has(lettre)) return `Option ${lettre}`
+    }
+    return `Option ${scenarios.length + 1}`
+  }
+
+  async function renommerScenario(nouveauNom) {
+    const nom = nouveauNom.trim()
+    if (!nom || !scenarioId) return
+    setScenarios((prev) => prev.map((s) => (s.id === scenarioId ? { ...s, nom } : s)))
+    await supabase.from('scenarios').update({ nom }).eq('id', scenarioId)
+  }
+
   async function dupliquerScenario() {
     setMessage('')
     setSucces('')
-    const source = scenarios.find((s) => s.id === scenarioId)
-    const nom = nomCopie.trim() || `${source?.nom || 'Scénario'} (copie)`
+    const nom = nomCopie.trim() || prochainNomOption()
 
     const { data: nouveau, error: erreurScenario } = await supabase
       .from('scenarios')
@@ -1228,9 +1247,23 @@ export default function Planning() {
                 ))}
               </select>
             </label>
+            <label>
+              Renommer
+              <input
+                type="text"
+                title="Renommer le scénario sélectionné"
+                value={scenarios.find((s) => s.id === scenarioId)?.nom || ''}
+                onChange={(e) => {
+                  const valeur = e.target.value
+                  setScenarios((prev) => prev.map((s) => (s.id === scenarioId ? { ...s, nom: valeur } : s)))
+                }}
+                onBlur={(e) => renommerScenario(e.target.value)}
+                disabled={!scenarioId}
+              />
+            </label>
             <input
               type="text"
-              placeholder="Nom de la copie (optionnel)"
+              placeholder={`Nom de la copie (${prochainNomOption()} par défaut)`}
               value={nomCopie}
               onChange={(e) => setNomCopie(e.target.value)}
             />
