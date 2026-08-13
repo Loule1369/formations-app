@@ -581,11 +581,13 @@ export default function Planning() {
       const tri = [...blocs].sort((a, b) => a.date.localeCompare(b.date))
       for (const voyage of grouperVoyages(tri.map((b) => b.date))) {
         const debutEstLundi = parseDate(voyage.debut).getDay() === 1
-        // Le lundi, le trajet se fait le matin même (pas de déplacement le dimanche par défaut).
+        // Un déplacement dure 3h par défaut (DUREE_DEPLACEMENT) — au chef de projet de l'adapter
+        // ensuite directement dans le planning selon le trajet réel. Le lundi, le trajet se fait le
+        // matin même, calé pour finir juste avant la pause déjeuner (pas de déplacement le dimanche).
         const arrivee = debutEstLundi
           ? {
               date: voyage.debut,
-              heure_debut: decimalEnHeure(WINDOW_START),
+              heure_debut: decimalEnHeure(PAUSE_DEJEUNER_DEBUT - DUREE_DEPLACEMENT),
               heure_fin: decimalEnHeure(PAUSE_DEJEUNER_DEBUT),
             }
           : {
@@ -605,13 +607,12 @@ export default function Planning() {
           })
         }
 
-        const blocsDernierJour = tri.filter((b) => b.date === voyage.fin)
-        const finMax = Math.max(...blocsDernierJour.map((b) => heureEnDecimal(b.heure_fin)))
-        const debutRetour = Math.max(finMax, WINDOW_END - DUREE_DEPLACEMENT)
+        // Toujours 3h par défaut (calé en fin de journée), même si le dernier bloc de formation
+        // déborde sur ce créneau — au chef de projet d'ajuster à la main en cas de vrai conflit.
         const depart = {
           date: voyage.fin,
-          heure_debut: decimalEnHeure(debutRetour),
-          heure_fin: decimalEnHeure(Math.min(debutRetour + DUREE_DEPLACEMENT, WINDOW_END)),
+          heure_debut: decimalEnHeure(WINDOW_END - DUREE_DEPLACEMENT),
+          heure_fin: decimalEnHeure(WINDOW_END),
         }
         clesAttendues.add(cle(formateurId, depart.date))
         if (!clesManuelles.has(cle(formateurId, depart.date))) {
