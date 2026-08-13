@@ -564,77 +564,87 @@ export default function Planning() {
       .eq('scenario_id', scenarioIdCible)
       .eq('type', 'deplacement')
 
-    const cle = (formateurId, date) => `${formateurId}|${date}`
-    const clesManuelles = new Set(
-      (deplacementsExistants || []).filter((d) => d.modifie_manuellement).map((d) => cle(d.formateur_id, d.date)),
-    )
-
     const parFormateur = {}
     for (const bloc of formationsActuelles || []) {
       if (!parFormateur[bloc.formateur_id]) parFormateur[bloc.formateur_id] = []
       parFormateur[bloc.formateur_id].push(bloc)
     }
 
-    const clesAttendues = new Set()
+    // Un déplacement modifié à la main n'est JAMAIS supprimé automatiquement — même déplacé sur une
+    // date différente de celle attendue par défaut (ex. avancé la veille au matin plutôt que le soir).
+    // On le rattache plutôt à la mission (arrivée/départ) la plus proche dans une fenêtre de quelques
+    // jours, pour éviter de le supprimer ET d'insérer un bloc par défaut en double à sa place.
+    const FENETRE_RATTACHEMENT_JOURS = 3
+    const manuelsParFormateur = {}
+    for (const d of deplacementsExistants || []) {
+      if (!d.modifie_manuellement) continue
+      if (!manuelsParFormateur[d.formateur_id]) manuelsParFormateur[d.formateur_id] = []
+      manuelsParFormateur[d.formateur_id].push(d)
+    }
+
+    const idsAConserver = new Set()
     const nouveauxDeplacements = []
     for (const [formateurId, blocs] of Object.entries(parFormateur)) {
       const tri = [...blocs].sort((a, b) => a.date.localeCompare(b.date))
+      const manuelsDisponibles = [...(manuelsParFormateur[formateurId] || [])]
+
+      const rattacherOuCreer = (dateCible, creerParDefaut) => {
+        const cibleMs = parseDate(dateCible).getTime()
+        let meilleur = null
+        let meilleurEcart = Infinity
+        for (const m of manuelsDisponibles) {
+          const ecart = Math.abs(parseDate(m.date).getTime() - cibleMs) / JOUR_MS
+          if (ecart <= FENETRE_RATTACHEMENT_JOURS && ecart < meilleurEcart) {
+            meilleur = m
+            meilleurEcart = ecart
+          }
+        }
+        if (meilleur) {
+          idsAConserver.add(meilleur.id)
+          manuelsDisponibles.splice(manuelsDisponibles.indexOf(meilleur), 1)
+        } else {
+          nouveauxDeplacements.push(creerParDefaut())
+        }
+      }
+
       for (const voyage of grouperVoyages(tri.map((b) => b.date))) {
         const debutEstLundi = parseDate(voyage.debut).getDay() === 1
         // Un déplacement dure 3h par défaut (DUREE_DEPLACEMENT) — au chef de projet de l'adapter
         // ensuite directement dans le planning selon le trajet réel. Le lundi, le trajet se fait le
         // matin même, calé pour finir juste avant la pause déjeuner (pas de déplacement le dimanche).
-        const arrivee = debutEstLundi
-          ? {
-              date: voyage.debut,
-              heure_debut: decimalEnHeure(PAUSE_DEJEUNER_DEBUT - DUREE_DEPLACEMENT),
-              heure_fin: decimalEnHeure(PAUSE_DEJEUNER_DEBUT),
-            }
-          : {
-              date: formatDate(new Date(parseDate(voyage.debut).getTime() - JOUR_MS)),
-              heure_debut: decimalEnHeure(WINDOW_END - DUREE_DEPLACEMENT),
-              heure_fin: decimalEnHeure(WINDOW_END),
-            }
-        clesAttendues.add(cle(formateurId, arrivee.date))
-        if (!clesManuelles.has(cle(formateurId, arrivee.date))) {
-          nouveauxDeplacements.push({
-            demande_id: demandeIdCible,
-            demande_ligne_id: null,
-            scenario_id: scenarioIdCible,
-            formateur_id: formateurId,
-            type: 'deplacement',
-            ...arrivee,
-          })
-        }
+        const dateArrivee = debutEstLundi
+          ? voyage.debut
+          : formatDate(new Date(parseDate(voyage.debut).getTime() - JOUR_MS))
+        rattacherOuCreer(dateArrivee, () => ({
+          demande_id: demandeIdCible,
+          demande_ligne_id: null,
+          scenario_id: scenarioIdCible,
+          formateur_id: formateurId,
+          type: 'deplacement',
+          date: dateArrivee,
+          heure_debut: debutEstLundi
+            ? decimalEnHeure(PAUSE_DEJEUNER_DEBUT - DUREE_DEPLACEMENT)
+            : decimalEnHeure(WINDOW_END - DUREE_DEPLACEMENT),
+          heure_fin: debutEstLundi ? decimalEnHeure(PAUSE_DEJEUNER_DEBUT) : decimalEnHeure(WINDOW_END),
+        }))
 
         // Toujours 3h par défaut (calé en fin de journée), même si le dernier bloc de formation
         // déborde sur ce créneau — au chef de projet d'ajuster à la main en cas de vrai conflit.
-        const depart = {
+        rattacherOuCreer(voyage.fin, () => ({
+          demande_id: demandeIdCible,
+          demande_ligne_id: null,
+          scenario_id: scenarioIdCible,
+          formateur_id: formateurId,
+          type: 'deplacement',
           date: voyage.fin,
           heure_debut: decimalEnHeure(WINDOW_END - DUREE_DEPLACEMENT),
           heure_fin: decimalEnHeure(WINDOW_END),
-        }
-        clesAttendues.add(cle(formateurId, depart.date))
-        if (!clesManuelles.has(cle(formateurId, depart.date))) {
-          nouveauxDeplacements.push({
-            demande_id: demandeIdCible,
-            demande_ligne_id: null,
-            scenario_id: scenarioIdCible,
-            formateur_id: formateurId,
-            type: 'deplacement',
-            ...depart,
-          })
-        }
+        }))
       }
     }
 
-    const idsAConserver = new Set(
-      (deplacementsExistants || [])
-        .filter((d) => d.modifie_manuellement && clesAttendues.has(cle(d.formateur_id, d.date)))
-        .map((d) => d.id),
-    )
     const idsASupprimer = (deplacementsExistants || [])
-      .filter((d) => !idsAConserver.has(d.id))
+      .filter((d) => !d.modifie_manuellement && !idsAConserver.has(d.id))
       .map((d) => d.id)
     if (idsASupprimer.length > 0) {
       await supabase.from('creneaux').delete().in('id', idsASupprimer)
@@ -1057,7 +1067,9 @@ export default function Planning() {
         ...(creneau.type === 'deplacement' ? { modifie_manuellement: true } : {}),
       })
       .eq('id', creneau.id)
-    await finaliserMutation()
+    // Redimensionner un déplacement ne change pas les jours de formation : inutile de resynchroniser
+    // (et ça évite tout risque de le voir remplacé par un bloc par défaut au passage).
+    if (creneau.type === 'formation') await finaliserMutation()
   }
 
   // Une même formation peut être découpée en plusieurs blocs (matin/après-midi, plusieurs jours) :

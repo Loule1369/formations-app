@@ -173,6 +173,9 @@
 
 .planning-scroll {
   overflow-x: auto;
+  overflow-y: auto;
+  max-height: calc(100vh - 260px);
+  min-height: 300px;
   border: 1px solid #ddd;
   border-radius: 6px;
   margin-bottom: 2rem;
