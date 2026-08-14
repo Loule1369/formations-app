@@ -5,10 +5,10 @@ import { useProjetActif } from '../lib/ProjetActifContext'
 
 const HOUR_HEIGHT = 36
 // Plage horaire affichée/éditable par la grille : rien avant WINDOW_START ni après WINDOW_END n'existe
-// dans le planning (pas un problème de défilement — le déplacement d'un bloc y est même bloqué). Élargie
-// à 5h-23h pour laisser de la place aux départs très tôt ou aux retours très tard.
-const WINDOW_START = 5
-const WINDOW_END = 23
+// dans le planning (pas un problème de défilement — le déplacement d'un bloc y est même bloqué).
+// Journée complète pour ne jamais bloquer un départ très tôt ou un retour très tard.
+const WINDOW_START = 0
+const WINDOW_END = 24
 const COL_HEIGHT = HOUR_HEIGHT * (WINDOW_END - WINDOW_START)
 const DAY_WIDTH = 170
 const HEADER_HEIGHT = 44
