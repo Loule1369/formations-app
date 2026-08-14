@@ -54,15 +54,12 @@ body {
   margin: 0;
 }
 
+/* #root ci-dessous : nettoyé du gabarit de départ (page vitrine centrée, largeur fixe, colonne flex
+   avec min-height:100svh) qui n'a jamais été pensé pour cette appli — ce mélange semble avoir empêché
+   le défilement normal de la page sur certains appareils (ex. geste 2 doigts sur trackpad). #root est
+   maintenant un simple bloc pleine largeur, sans contrainte de hauteur ni de mise en page flex. */
 #root {
-  width: 1126px;
-  max-width: 100%;
-  margin: 0 auto;
-  text-align: center;
-  border-inline: 1px solid var(--border);
-  min-height: 100svh;
-  display: flex;
-  flex-direction: column;
+  width: 100%;
   box-sizing: border-box;
 }
 
